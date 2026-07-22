@@ -1,0 +1,962 @@
+//
+//  OutputAirPlay.m
+//  CogAudio
+//
+
+#import "OutputAirPlay.h"
+#import "OutputDeviceRouting.h"
+#import "OutputNode.h"
+
+#import "Logging.h"
+
+#import <CogAudio/VisualizationController.h>
+
+static NSNotificationName CogPlaybackDidPrebufferNotification = @"CogPlaybackDidPrebufferNotification";
+
+static void *kOutputAirPlayContext = &kOutputAirPlayContext;
+
+// AirPlay wants depth for dropout resistance and multi-room sync. Local
+// listeners never route through this backend, so nobody else pays for it.
+static const double kAirPlayMaxBufferedSeconds = 2.0;
+
+static BOOL playbackFadesEnabled(void) {
+	NSNumber *enabled = [[NSUserDefaults standardUserDefaults] objectForKey:@"enableFading"];
+	return !enabled || [enabled boolValue];
+}
+
+static uint32_t configForChannelCount(uint32_t channels) {
+	switch(channels) {
+		case 1: return AudioConfigMono;
+		case 2: return AudioConfigStereo;
+		case 3: return AudioConfig3Point0;
+		case 4: return AudioConfig4Point0;
+		case 5: return AudioConfig5Point0;
+		case 6: return AudioConfig5Point1;
+		case 7: return AudioConfig6Point1;
+		case 8: return AudioConfig7Point1;
+		default: return AudioConfigStereo;
+	}
+}
+
+@implementation OutputAirPlay {
+	VisualizationController *visController;
+}
+
+- (id)initWithController:(OutputNode *)c {
+	self = [super init];
+	if(self) {
+		buffer = [[ChunkList alloc] initWithMaximumDuration:0.5];
+		writeSemaphore = [Semaphore new];
+		readSemaphore = [Semaphore new];
+
+		outputController = c;
+		volume = 1.0;
+		outputDeviceID = -1;
+
+		secondsHdcdSustained = 0;
+
+		outputLock = [NSLock new];
+		currentPtsLock = [NSLock new];
+	}
+
+	return self;
+}
+
+static OSStatus
+airplay_default_device_changed(AudioObjectID inObjectID, UInt32 inNumberAddresses, const AudioObjectPropertyAddress *inAddresses, void *inUserData) {
+	OutputAirPlay *_self = (__bridge OutputAirPlay *)inUserData;
+	return [_self setOutputDeviceByID:-1];
+}
+
+static OSStatus
+airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddresses, const AudioObjectPropertyAddress *inAddresses, void *inUserData) {
+	OutputAirPlay *_self = (__bridge OutputAirPlay *)inUserData;
+	for(UInt32 i = 0; i < inNumberAddresses; ++i) {
+		switch(inAddresses[i].mSelector) {
+			case kAudioDevicePropertyDeviceIsAlive:
+				return [_self setOutputDeviceByID:-1];
+		}
+	}
+	return noErr;
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+	if(context != kOutputAirPlayContext) {
+		[super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+		return;
+	}
+
+	if([keyPath isEqualToString:@"values.outputDevice"]) {
+		NSDictionary *device = [[[NSUserDefaultsController sharedUserDefaultsController] defaults] objectForKey:@"outputDevice"];
+
+		[self setOutputDeviceWithDeviceDict:device];
+	} else if([keyPath isEqualToString:@"status"]) {
+		if(audioRenderer && [audioRenderer status] == AVQueuedSampleBufferRenderingStatusFailed) {
+			ALog(@"AirPlay renderer failed: %@", [audioRenderer error]);
+			// Fall back to the system default device. This retriggers device
+			// observers everywhere, including the backend re-selection in
+			// AudioPlayer if the default route is not AirPlay.
+			dispatch_async(dispatch_get_main_queue(), ^{
+				[[[NSUserDefaultsController sharedUserDefaultsController] defaults] removeObjectForKey:@"outputDevice"];
+			});
+		}
+	}
+}
+
+- (AudioChunk *)renderInput:(int)amountToRead {
+	if(stopping == YES || [outputController shouldContinue] == NO) {
+		// Chain is dead, fill out the serial number pointer forever with silence
+		stopping = YES;
+		return [AudioChunk new];
+	}
+
+	AudioStreamBasicDescription format;
+	uint32_t config;
+	if([outputController peekFormat:&format channelConfig:&config]) {
+		if(!streamFormatStarted || config != realStreamChannelConfig || memcmp(&realStreamFormat, &format, sizeof(format)) != 0) {
+			realStreamFormat = format;
+			realStreamChannelConfig = config;
+			streamFormatStarted = YES;
+			streamFormatChanged = YES;
+		}
+	}
+
+	if(streamFormatChanged) {
+		return [AudioChunk new];
+	}
+
+	return [outputController readChunk:amountToRead];
+}
+
+- (void)updateStreamFormat {
+	resetStreamFormat = NO;
+
+	streamFormat = realStreamFormat;
+	streamChannelConfig = realStreamChannelConfig;
+}
+
+- (BOOL)signalEndOfStream:(double)latency {
+	stopped = YES;
+	BOOL ret = [outputController selectNextBuffer];
+	stopped = ret;
+	if(!stopping) {
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC * latency)), dispatch_get_main_queue(), ^{
+			if(!self->stopping) {
+				[self->outputController endOfInputPlayed];
+				[self->outputController resetAmountPlayed];
+			}
+		});
+	}
+	return ret;
+}
+
+- (BOOL)processEndOfStream {
+	if(stopping || ([outputController endOfStream] == YES && [self signalEndOfStream:[outputController getTotalLatency]])) {
+		stopping = YES;
+		return YES;
+	}
+	return NO;
+}
+
+- (void)renderAndConvert {
+	if(resetStreamFormat) {
+		[self updateStreamFormat];
+		if([self processEndOfStream]) {
+			return;
+		}
+	}
+
+	AudioChunk *chunk = [self renderInput:512];
+	size_t frameCount = 0;
+	if(chunk && (frameCount = [chunk frameCount])) {
+		[outputLock lock];
+		[buffer addChunk:chunk];
+		[outputLock unlock];
+		[readSemaphore signal];
+	}
+
+	if(streamFormatChanged) {
+		streamFormatChanged = NO;
+		if(frameCount) {
+			resetStreamFormat = YES;
+		} else {
+			[self updateStreamFormat];
+		}
+	}
+	[self processEndOfStream];
+}
+
+- (OSStatus)setOutputDeviceByID:(int)deviceIDIn {
+	OSStatus err;
+	BOOL defaultDevice = NO;
+	AudioObjectPropertyAddress theAddress = {
+		.mSelector = kAudioHardwarePropertyDefaultOutputDevice,
+		.mScope = kAudioObjectPropertyScopeGlobal,
+		.mElement = kAudioObjectPropertyElementMaster
+	};
+
+	AudioDeviceID deviceID = (AudioDeviceID)deviceIDIn;
+
+	if(deviceIDIn == -1) {
+		defaultDevice = YES;
+		err = CogResolveDefaultOutputDevice(&deviceID);
+
+		if(err != noErr) {
+			DLog(@"THERE'S NO DEFAULT OUTPUT DEVICE");
+
+			return err;
+		}
+	}
+
+	if(audioRenderer) {
+		if(defaultdevicelistenerapplied && !defaultDevice) {
+			AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &theAddress, airplay_default_device_changed, (__bridge void *_Nullable)(self));
+			defaultdevicelistenerapplied = NO;
+		}
+
+		outputdevicechanged = NO;
+
+		if(outputDeviceID != deviceID) {
+			if(currentdevicelistenerapplied) {
+				if(devicealivelistenerapplied) {
+					theAddress.mSelector = kAudioDevicePropertyDeviceIsAlive;
+					AudioObjectRemovePropertyListener(outputDeviceID, &theAddress, airplay_current_device_listener, (__bridge void *_Nullable)(self));
+					devicealivelistenerapplied = NO;
+				}
+				currentdevicelistenerapplied = NO;
+			}
+
+			DLog(@"AirPlay output device: %i\n", deviceID);
+			outputDeviceID = deviceID;
+
+			NSString *deviceUID = CogDeviceUID(outputDeviceID);
+			if(!deviceUID) {
+				DLog(@"Unable to get UID of device");
+				return -1;
+			}
+
+			[audioRenderer setAudioOutputDeviceUniqueID:deviceUID];
+
+			outputdevicechanged = YES;
+		}
+
+		if(!currentdevicelistenerapplied) {
+			if(!devicealivelistenerapplied && !defaultDevice) {
+				theAddress.mSelector = kAudioDevicePropertyDeviceIsAlive;
+				AudioObjectAddPropertyListener(outputDeviceID, &theAddress, airplay_current_device_listener, (__bridge void *_Nullable)(self));
+				devicealivelistenerapplied = YES;
+			}
+			currentdevicelistenerapplied = YES;
+		}
+
+		if(!defaultdevicelistenerapplied && defaultDevice) {
+			theAddress.mSelector = kAudioHardwarePropertyDefaultOutputDevice;
+			AudioObjectAddPropertyListener(kAudioObjectSystemObject, &theAddress, airplay_default_device_changed, (__bridge void *_Nullable)(self));
+			defaultdevicelistenerapplied = YES;
+		}
+	}
+
+	return noErr;
+}
+
+- (BOOL)setOutputDeviceWithDeviceDict:(NSDictionary *)deviceDict {
+	NSNumber *deviceIDNum = deviceDict ? [deviceDict objectForKey:@"deviceID"] : @(-1);
+	int outputDeviceIDIn = deviceIDNum ? [deviceIDNum intValue] : -1;
+
+	OSStatus err = [self setOutputDeviceByID:outputDeviceIDIn];
+
+	if(err != noErr) {
+		// Try matching by name.
+		NSString *userDeviceName = deviceDict[@"name"];
+		AudioDeviceID matched = kAudioObjectUnknown;
+		if([userDeviceName length]) {
+			AudioObjectPropertyAddress theAddress = {
+				.mSelector = kAudioHardwarePropertyDevices,
+				.mScope = kAudioObjectPropertyScopeGlobal,
+				.mElement = kAudioObjectPropertyElementMaster
+			};
+			UInt32 propsize = 0;
+			if(AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &theAddress, 0, NULL, &propsize) == noErr) {
+				UInt32 nDevices = propsize / (UInt32)sizeof(AudioDeviceID);
+				AudioDeviceID *devids = (AudioDeviceID *)malloc(propsize);
+				if(devids && AudioObjectGetPropertyData(kAudioObjectSystemObject, &theAddress, 0, NULL, &propsize, devids) == noErr) {
+					for(UInt32 i = 0; i < nDevices; ++i) {
+						CFStringRef name = NULL;
+						UInt32 size = sizeof(name);
+						theAddress.mSelector = kAudioDevicePropertyDeviceNameCFString;
+						theAddress.mScope = kAudioDevicePropertyScopeOutput;
+						if(AudioObjectGetPropertyData(devids[i], &theAddress, 0, NULL, &size, &name) != noErr || !name) {
+							theAddress.mSelector = kAudioHardwarePropertyDevices;
+							theAddress.mScope = kAudioObjectPropertyScopeGlobal;
+							continue;
+						}
+						BOOL matches = [userDeviceName isEqualToString:(__bridge NSString *)name];
+						CFRelease(name);
+						theAddress.mSelector = kAudioHardwarePropertyDevices;
+						theAddress.mScope = kAudioObjectPropertyScopeGlobal;
+						if(matches) {
+							matched = devids[i];
+							break;
+						}
+					}
+				}
+				if(devids) free(devids);
+			}
+		}
+		if(matched != kAudioObjectUnknown) {
+			err = [self setOutputDeviceByID:(int)matched];
+			DLog(@"Found output device: \"%@\" (%d).", userDeviceName, matched);
+		}
+	}
+
+	if(err != noErr) {
+		ALog(@"No output device could be found, your random error code is %d. Have a nice day!", err);
+
+		return NO;
+	}
+
+	return YES;
+}
+
+- (AudioStreamBasicDescription)outputFormatForInputFormat:(AudioStreamBasicDescription)inputFormat {
+	AudioStreamBasicDescription outputFormat;
+	bzero(&outputFormat, sizeof(outputFormat));
+
+	double sampleRate = inputFormat.mSampleRate;
+	if(inputFormat.mBitsPerChannel == 1) {
+		// DSD input: advertise the decimated PCM rate, never a DoP carrier
+		// rate, so ConverterNode always takes the DSD_DECIMATE path.
+		sampleRate = inputFormat.mSampleRate / 8.0;
+	}
+	if(sampleRate > 192000.0) sampleRate = 192000.0;
+	if(sampleRate < 8000.0) sampleRate = 8000.0;
+
+	uint32_t channels = inputFormat.mChannelsPerFrame;
+	if(channels > 8) channels = 8;
+	if(!channels) channels = 2;
+
+	outputFormat.mSampleRate = sampleRate;
+	outputFormat.mFormatID = kAudioFormatLinearPCM;
+	outputFormat.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
+	outputFormat.mBitsPerChannel = 32;
+	outputFormat.mChannelsPerFrame = channels;
+	outputFormat.mFramesPerPacket = 1;
+	outputFormat.mBytesPerFrame = (UInt32)(sizeof(float) * channels);
+	outputFormat.mBytesPerPacket = outputFormat.mBytesPerFrame;
+
+	return outputFormat;
+}
+
+- (BOOL)prepareForInputFormat:(AudioStreamBasicDescription)inputFormat {
+	deviceFormat = [self outputFormatForInputFormat:inputFormat];
+	deviceChannelConfig = configForChannelCount(deviceFormat.mChannelsPerFrame);
+	return YES;
+}
+
+- (BOOL)updateFormatDescriptionForFormat:(AudioStreamBasicDescription)fmt channelConfig:(uint32_t)config {
+	if(audioFormatDescription && memcmp(&descriptionFormat, &fmt, sizeof(fmt)) == 0 && descriptionChannelConfig == config) {
+		return YES;
+	}
+
+	AudioChannelLayoutTag tag = 0;
+	AudioChannelLayout layout = { 0 };
+	switch(config) {
+		case AudioConfigMono:
+			tag = kAudioChannelLayoutTag_Mono;
+			break;
+		case AudioConfigStereo:
+			tag = kAudioChannelLayoutTag_Stereo;
+			break;
+		case AudioConfig3Point0:
+			tag = kAudioChannelLayoutTag_WAVE_3_0;
+			break;
+		case AudioConfig4Point0:
+			tag = kAudioChannelLayoutTag_WAVE_4_0_A;
+			break;
+		case AudioConfig5Point0:
+			tag = kAudioChannelLayoutTag_WAVE_5_0_A;
+			break;
+		case AudioConfig5Point1:
+			tag = kAudioChannelLayoutTag_WAVE_5_1_A;
+			break;
+		case AudioConfig6Point1:
+			tag = kAudioChannelLayoutTag_WAVE_6_1;
+			break;
+		case AudioConfig7Point1:
+			tag = kAudioChannelLayoutTag_WAVE_7_1;
+			break;
+		default:
+			tag = 0;
+			break;
+	}
+
+	if(tag) {
+		layout.mChannelLayoutTag = tag;
+	} else {
+		layout.mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelBitmap;
+		layout.mChannelBitmap = config;
+	}
+
+	if(audioFormatDescription) {
+		CFRelease(audioFormatDescription);
+		audioFormatDescription = NULL;
+	}
+
+	if(CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &fmt, sizeof(layout), &layout, 0, NULL, NULL, &audioFormatDescription) != noErr) {
+		return NO;
+	}
+
+	descriptionFormat = fmt;
+	descriptionChannelConfig = config;
+	return YES;
+}
+
+- (CMSampleBufferRef)makeSampleBufferWithChunk:(AudioChunk *)chunk {
+	AudioStreamBasicDescription chunkFormat = [chunk format];
+	uint32_t chunkConfig = [chunk channelConfig];
+	if(![self updateFormatDescriptionForFormat:chunkFormat channelConfig:chunkConfig]) {
+		return NULL;
+	}
+
+	size_t frameCount = [chunk frameCount];
+	double chunkTimestamp = [chunk streamTimestamp];
+	double chunkDurationSeconds = (double)frameCount / chunkFormat.mSampleRate;
+	NSData *data = [chunk removeSamples:frameCount];
+	size_t byteCount = frameCount * chunkFormat.mBytesPerPacket;
+	if([data length] < byteCount) {
+		return NULL;
+	}
+
+	CMBlockBufferRef blockBuffer = NULL;
+	if(CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, NULL, byteCount, kCFAllocatorDefault, NULL, 0, byteCount, kCMBlockBufferAssureMemoryNowFlag, &blockBuffer) != noErr || !blockBuffer) {
+		return NULL;
+	}
+	if(CMBlockBufferReplaceDataBytes([data bytes], blockBuffer, 0, byteCount) != noErr) {
+		CFRelease(blockBuffer);
+		return NULL;
+	}
+
+	CMTime pts;
+	[currentPtsLock lock];
+	pts = outputPts;
+	[currentPtsLock unlock];
+
+	CMSampleBufferRef sampleBuffer = NULL;
+	OSStatus err = CMAudioSampleBufferCreateReadyWithPacketDescriptions(kCFAllocatorDefault, blockBuffer, audioFormatDescription, frameCount, pts, NULL, &sampleBuffer);
+	CFRelease(blockBuffer);
+	if(err != noErr || !sampleBuffer) {
+		return NULL;
+	}
+
+	[currentPtsLock lock];
+	lastEnqueuedStreamTimestamp = chunkTimestamp + chunkDurationSeconds;
+	[currentPtsLock unlock];
+
+	return sampleBuffer;
+}
+
+- (void)enqueuePendingAudio {
+	if(!audioRenderer) return;
+
+	while(!stopping && [audioRenderer isReadyForMoreMediaData]) {
+		double buffered;
+		[currentPtsLock lock];
+		buffered = CMTimeGetSeconds(CMTimeSubtract(outputPts, currentPts));
+		[currentPtsLock unlock];
+		if(buffered >= kAirPlayMaxBufferedSeconds) break;
+
+		AudioChunk *chunk = nil;
+		[outputLock lock];
+		ChunkList *tail = [bufferNode buffer];
+		if(tail && ![tail isEmpty]) {
+			chunk = [tail removeSamples:512];
+		}
+		[outputLock unlock];
+		if(!chunk || ![chunk frameCount]) break;
+
+		CMSampleBufferRef bufferRef = [self makeSampleBufferWithChunk:chunk];
+		if(!bufferRef) break;
+
+		CMTime chunkDuration = CMSampleBufferGetDuration(bufferRef);
+		[currentPtsLock lock];
+		outputPts = CMTimeAdd(outputPts, chunkDuration);
+		[currentPtsLock unlock];
+
+		[audioRenderer enqueueSampleBuffer:bufferRef];
+		CFRelease(bufferRef);
+
+		prebufferReached = YES;
+	}
+}
+
+- (void)flushRenderer {
+	[self removeSynchronizerBlock];
+	[renderSynchronizer setRate:0];
+	[audioRenderer stopRequestingMediaData];
+	[audioRenderer flush];
+
+	[currentPtsLock lock];
+	currentPts = kCMTimeZero;
+	lastPts = kCMTimeZero;
+	outputPts = kCMTimeZero;
+	lastEnqueuedStreamTimestamp = 0.0;
+	[currentPtsLock unlock];
+	secondsLatency = 0.0;
+
+	started = NO;
+	restarted = NO;
+
+	[self synchronizerBlock];
+}
+
+- (void)threadEntry:(id)arg {
+	@autoreleasepool {
+		NSThread *currentThread = [NSThread currentThread];
+		[currentThread setThreadPriority:0.75];
+		[currentThread setQualityOfService:NSQualityOfServiceUserInitiated];
+	}
+
+	running = YES;
+	started = NO;
+	shouldPlayOutBuffer = NO;
+	BOOL rendered = NO;
+
+	while(!stopping) {
+		@autoreleasepool {
+			if([outputController shouldReset]) {
+				[outputController setShouldReset:NO];
+				pendingFlush = YES;
+			}
+			if(pendingFlush) {
+				pendingFlush = NO;
+				[outputLock lock];
+				[buffer reset];
+				[self setShouldReset:YES];
+				[outputLock unlock];
+				[self flushRenderer];
+			}
+
+			if(stopping)
+				break;
+
+			if(!cutOffInput && ![buffer isFull]) {
+				[self renderAndConvert];
+				rendered = YES;
+			} else {
+				rendered = NO;
+			}
+
+			[self enqueuePendingAudio];
+
+			if(!started && !paused) {
+				[self resume];
+			}
+
+			if(prebufferReached && !prebufferSignaled) {
+				prebufferSignaled = YES;
+				[[NSNotificationCenter defaultCenter] postNotificationName:CogPlaybackDidPrebufferNotification object:nil];
+			}
+
+			if([outputController shouldContinue] == NO) {
+				break;
+			}
+		}
+
+		if(!rendered) {
+			usleep(5000);
+		}
+	}
+
+	stopped = YES;
+	if(!stopInvoked) {
+		[self doStop];
+	}
+}
+
+- (void)synchronizerBlock {
+	NSLock *lock = currentPtsLock;
+	CMTime interval = CMTimeMakeWithSeconds(1.0 / 60.0, 1000000000);
+	currentPtsObserver = [renderSynchronizer addPeriodicTimeObserverForInterval:interval
+	                                                                      queue:NULL
+	                                                                 usingBlock:^(CMTime time) {
+		                                                                 [lock lock];
+		                                                                 self->currentPts = time;
+		                                                                 CMTime latencyTime = CMTimeSubtract(self->outputPts, time);
+		                                                                 double enqueuedTimestamp = self->lastEnqueuedStreamTimestamp;
+		                                                                 [lock unlock];
+		                                                                 double latencySeconds = CMTimeGetSeconds(latencyTime);
+		                                                                 if(latencySeconds < 0)
+			                                                                 latencySeconds = 0;
+		                                                                 self->secondsLatency = latencySeconds;
+		                                                                 if(enqueuedTimestamp > 0) {
+			                                                                 double position = enqueuedTimestamp - latencySeconds;
+			                                                                 if(position > 0) {
+				                                                                 [self->outputController setAmountPlayed:position];
+			                                                                 }
+		                                                                 }
+		                                                                 [self->visController postLatency:[self->outputController getVisLatency]];
+		                                                                 [self->visController postFullLatency:[self->outputController getTotalLatency]];
+	                                                                 }];
+}
+
+- (void)removeSynchronizerBlock {
+	if(renderSynchronizer && currentPtsObserver) {
+		[renderSynchronizer removeTimeObserver:currentPtsObserver];
+		currentPtsObserver = nil;
+	}
+}
+
+- (BOOL)setup {
+	if(audioRenderer || renderSynchronizer)
+		[self stop];
+
+	@synchronized(self) {
+		stopInvoked = NO;
+		stopCompleted = NO;
+		commandStop = NO;
+		shouldPlayOutBuffer = NO;
+
+		audioFormatDescription = NULL;
+		bzero(&descriptionFormat, sizeof(descriptionFormat));
+		descriptionChannelConfig = 0;
+
+		resetStreamFormat = NO;
+		streamFormatChanged = NO;
+		streamFormatStarted = NO;
+
+		running = NO;
+		stopping = NO;
+		stopped = NO;
+		paused = NO;
+		started = NO;
+		restarted = NO;
+		outputDeviceID = -1;
+
+		cutOffInput = NO;
+		faded = NO;
+		pendingFlush = NO;
+
+		streamTimestamp = 0.0;
+		lastEnqueuedStreamTimestamp = 0.0;
+		secondsLatency = 0.0;
+		prebufferReached = NO;
+		prebufferSignaled = NO;
+
+		audioRenderer = [AVSampleBufferAudioRenderer new];
+		renderSynchronizer = [AVSampleBufferRenderSynchronizer new];
+
+		if(audioRenderer == nil || renderSynchronizer == nil)
+			return NO;
+
+		// Setup the output device before mucking with settings
+		NSDictionary *device = [[[NSUserDefaultsController sharedUserDefaultsController] defaults] objectForKey:@"outputDevice"];
+		if(device) {
+			BOOL ok = [self setOutputDeviceWithDeviceDict:device];
+			if(!ok) {
+				// Ruh roh.
+				[self setOutputDeviceWithDeviceDict:nil];
+
+				[[[NSUserDefaultsController sharedUserDefaultsController] defaults] removeObjectForKey:@"outputDevice"];
+			}
+		} else {
+			[self setOutputDeviceWithDeviceDict:nil];
+		}
+
+		// Default advertised format until the first track prepares a real one
+		bzero(&deviceFormat, sizeof(deviceFormat));
+		deviceFormat.mSampleRate = 44100.0;
+		deviceFormat.mFormatID = kAudioFormatLinearPCM;
+		deviceFormat.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
+		deviceFormat.mBitsPerChannel = 32;
+		deviceFormat.mChannelsPerFrame = 2;
+		deviceFormat.mFramesPerPacket = 1;
+		deviceFormat.mBytesPerFrame = sizeof(float) * 2;
+		deviceFormat.mBytesPerPacket = sizeof(float) * 2;
+		deviceChannelConfig = AudioConfigStereo;
+
+		[outputController setFormat:&deviceFormat channelConfig:deviceChannelConfig];
+
+		visController = [VisualizationController sharedController];
+
+		downmixNode = [[DSPDownmixNode alloc] initWithController:self previous:self latency:0.03];
+		faderNode = [[DSPFaderNode alloc] initWithController:self previous:downmixNode latency:0.03];
+
+		bufferNode = [[SimpleBuffer alloc] initWithController:self previous:faderNode latency:0.1];
+
+		[self setShouldContinue:YES];
+		[self setEndOfStream:NO];
+
+		[downmixNode setResetBarrier:YES];
+		[downmixNode setOutputFormat:deviceFormat withChannelConfig:deviceChannelConfig];
+
+		DSPsLaunched = YES;
+		[self launchDSPs];
+		[bufferNode launchThread];
+
+		[[NSUserDefaultsController sharedUserDefaultsController] addObserver:self forKeyPath:@"values.outputDevice" options:0 context:kOutputAirPlayContext];
+		observersapplied = YES;
+
+		[audioRenderer addObserver:self forKeyPath:@"status" options:0 context:kOutputAirPlayContext];
+		rendererStatusObserverApplied = YES;
+
+		[renderSynchronizer addRenderer:audioRenderer];
+
+		[currentPtsLock lock];
+		currentPts = kCMTimeZero;
+		lastPts = kCMTimeZero;
+		outputPts = kCMTimeZero;
+		[currentPtsLock unlock];
+
+		[self synchronizerBlock];
+
+		[audioRenderer setVolume:volume];
+
+		return YES;
+	}
+}
+
+- (NSArray *)DSPs {
+	if(DSPsLaunched) {
+		return @[downmixNode, faderNode];
+	} else {
+		return @[];
+	}
+}
+
+- (DSPDownmixNode *)downmix {
+	return downmixNode;
+}
+
+- (DSPFaderNode *)fader {
+	return faderNode;
+}
+
+- (void)launchDSPs {
+	NSArray *DSPs = [self DSPs];
+
+	for (Node *node in DSPs) {
+		[node launchThread];
+	}
+}
+
+- (double)volume {
+	return volume * 100.0f;
+}
+
+- (void)setVolume:(double)v {
+	volume = v * 0.01f;
+	if(audioRenderer) {
+		[audioRenderer setVolume:volume];
+	}
+}
+
+- (double)latency {
+	double tail = [buffer listDuration] + [[downmixNode buffer] listDuration] + [[faderNode buffer] listDuration] + [[bufferNode buffer] listDuration];
+	double renderer = secondsLatency > 0 ? secondsLatency : 0;
+	return renderer + tail;
+}
+
+- (void)start {
+	[self threadEntry:nil];
+}
+
+- (void)stop {
+	commandStop = YES;
+	[self doStop];
+}
+
+- (void)doStop {
+	if(stopInvoked) {
+		return;
+	}
+	@synchronized(self) {
+		stopInvoked = YES;
+		if(observersapplied) {
+			[[NSUserDefaultsController sharedUserDefaultsController] removeObserver:self forKeyPath:@"values.outputDevice" context:kOutputAirPlayContext];
+			observersapplied = NO;
+		}
+		if(rendererStatusObserverApplied) {
+			[audioRenderer removeObserver:self forKeyPath:@"status" context:kOutputAirPlayContext];
+			rendererStatusObserverApplied = NO;
+		}
+		stopping = YES;
+		paused = NO;
+		if(defaultdevicelistenerapplied || currentdevicelistenerapplied || devicealivelistenerapplied) {
+			AudioObjectPropertyAddress theAddress = {
+				.mScope = kAudioObjectPropertyScopeGlobal,
+				.mElement = kAudioObjectPropertyElementMaster
+			};
+			if(defaultdevicelistenerapplied) {
+				theAddress.mSelector = kAudioHardwarePropertyDefaultOutputDevice;
+				AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &theAddress, airplay_default_device_changed, (__bridge void *_Nullable)(self));
+				defaultdevicelistenerapplied = NO;
+			}
+			if(devicealivelistenerapplied) {
+				theAddress.mSelector = kAudioDevicePropertyDeviceIsAlive;
+				AudioObjectRemovePropertyListener(outputDeviceID, &theAddress, airplay_current_device_listener, (__bridge void *_Nullable)(self));
+				devicealivelistenerapplied = NO;
+			}
+			currentdevicelistenerapplied = NO;
+		}
+		if(renderSynchronizer || audioRenderer) {
+			if(renderSynchronizer) {
+				if(shouldPlayOutBuffer && !commandStop) {
+					int compareVal = 0;
+					double drainLatency = self->secondsLatency >= 0 ? self->secondsLatency : 0;
+					int compareMax = (((1000000 / 5000) * drainLatency) + (10000 / 5000)); // latency plus 10ms, divide by sleep intervals
+					do {
+						[currentPtsLock lock];
+						compareVal = CMTimeCompare(outputPts, currentPts);
+						[currentPtsLock unlock];
+						usleep(5000);
+					} while(!commandStop && compareVal > 0 && compareMax-- > 0);
+				}
+				[self removeSynchronizerBlock];
+				[renderSynchronizer setRate:0];
+				if(audioRenderer) {
+					[renderSynchronizer removeRenderer:audioRenderer atTime:kCMTimeZero completionHandler:^(BOOL didRemoveRenderer) {
+						if(!didRemoveRenderer) {
+							DLog(@"Error removing renderer!");
+						}
+					}];
+				}
+			}
+			if(audioRenderer) {
+				[audioRenderer stopRequestingMediaData];
+				[audioRenderer flush];
+			}
+			renderSynchronizer = nil;
+			audioRenderer = nil;
+		}
+		if(running) {
+			while(!stopped) {
+				stopping = YES;
+				usleep(5000);
+			}
+		}
+		if(audioFormatDescription) {
+			CFRelease(audioFormatDescription);
+			audioFormatDescription = NULL;
+		}
+		if(DSPsLaunched) {
+			[self setShouldContinue:NO];
+			[downmixNode setShouldContinue:NO];
+			[faderNode setShouldContinue:NO];
+			downmixNode = nil;
+			faderNode = nil;
+			DSPsLaunched = NO;
+		}
+		if(bufferNode) {
+			[bufferNode setShouldContinue:NO];
+			bufferNode = nil;
+		}
+		outputController = nil;
+		if(visController) {
+			[visController reset];
+			visController = nil;
+		}
+		prebufferReached = NO;
+		prebufferSignaled = NO;
+		stopCompleted = YES;
+	}
+}
+
+- (void)dealloc {
+	[self stop];
+	// In case stop called on another thread first
+	while(!stopCompleted) {
+		usleep(500);
+	}
+}
+
+- (void)pause {
+	paused = YES;
+	if(started)
+		[renderSynchronizer setRate:0];
+}
+
+- (void)resume {
+	[renderSynchronizer setRate:1.0 time:currentPts];
+	paused = NO;
+	started = YES;
+}
+
+- (void)fadeOut {
+	// AirPlay routes buffer seconds ahead; an in-band fade would only be
+	// audible after that buffer drains, so halt the synchronizer instead.
+	faded = YES;
+	[self pause];
+}
+
+- (void)fadeOutBackground {
+	cutOffInput = YES;
+
+	[bufferNode setPreviousNode:nil];
+	[downmixNode setPreviousNode:nil];
+
+	DSPDownmixNode *oldDownmix = downmixNode;
+	DSPFaderNode *oldFader = faderNode;
+
+	downmixNode = [[DSPDownmixNode alloc] initWithController:self previous:self latency:0.03];
+	faderNode = [[DSPFaderNode alloc] initWithController:self previous:nil latency:0.03];
+	[downmixNode setResetBarrier:YES];
+	[downmixNode setOutputFormat:deviceFormat withChannelConfig:deviceChannelConfig];
+	faderNode.timestamp = oldFader.timestamp;
+
+	[oldDownmix setShouldContinue:NO];
+	[oldFader setShouldContinue:NO];
+
+	[outputLock lock];
+	buffer = [[ChunkList alloc] initWithMaximumDuration:0.5];
+	[outputLock unlock];
+
+	[bufferNode setPreviousNode:faderNode];
+	[bufferNode resetBuffer];
+	[self launchDSPs];
+
+	pendingFlush = YES;
+
+	cutOffInput = NO;
+}
+
+- (void)beginSeek {
+}
+
+- (void)fadeIn {
+	faded = NO;
+	[self resume];
+}
+
+- (void)faderFadeIn {
+	if(playbackFadesEnabled()) {
+		[faderNode fadeIn];
+	} else {
+		[faderNode waitForReset];
+	}
+	[faderNode setPreviousNode:downmixNode];
+	faded = NO;
+	prebufferSignaled = NO;
+}
+
+- (void)timeOut {
+	// Synchronizer rate 0 already halts streaming; there is no hardware
+	// unit to suspend on an idle timer.
+}
+
+- (void)sustainHDCD {
+	secondsHdcdSustained = 10.0;
+}
+
+- (void)setShouldPlayOutBuffer:(BOOL)s {
+	shouldPlayOutBuffer = s;
+}
+
+- (AudioStreamBasicDescription)deviceFormat {
+	return deviceFormat;
+}
+
+- (uint32_t)deviceChannelConfig {
+	return deviceChannelConfig;
+}
+
+@end
