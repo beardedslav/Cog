@@ -71,6 +71,8 @@
 		835DD2672ACAF1D90057E319 /* OutputCoreAudio.m in Sources */ = {isa = PBXBuildFile; fileRef = 835DD2652ACAF1D90057E319 /* OutputCoreAudio.m */; };
 		835DD2682ACAF1D90057E319 /* OutputCoreAudio.h in Headers */ = {isa = PBXBuildFile; fileRef = 835DD2662ACAF1D90057E319 /* OutputCoreAudio.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		A1A0C0DE2E3700000000A002 /* CogOutput.h in Headers */ = {isa = PBXBuildFile; fileRef = A1A0C0DE2E3700000000A001 /* CogOutput.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		A1A0C0DE2E3700000000A004 /* OutputDeviceRouting.h in Headers */ = {isa = PBXBuildFile; fileRef = A1A0C0DE2E3700000000A003 /* OutputDeviceRouting.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		A1A0C0DE2E3700000000A006 /* OutputDeviceRouting.m in Sources */ = {isa = PBXBuildFile; fileRef = A1A0C0DE2E3700000000A005 /* OutputDeviceRouting.m */; };
 		835DD2722ACAF5AD0057E319 /* lpc.h in Headers */ = {isa = PBXBuildFile; fileRef = 835DD26D2ACAF5AD0057E319 /* lpc.h */; };
 		835DD2732ACAF5AD0057E319 /* util.h in Headers */ = {isa = PBXBuildFile; fileRef = 835DD26E2ACAF5AD0057E319 /* util.h */; };
 		835DD2742ACAF5AD0057E319 /* lpc.c in Sources */ = {isa = PBXBuildFile; fileRef = 835DD26F2ACAF5AD0057E319 /* lpc.c */; };
@@ -211,6 +213,8 @@
 		835DD2652ACAF1D90057E319 /* OutputCoreAudio.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = OutputCoreAudio.m; sourceTree = "<group>"; };
 		835DD2662ACAF1D90057E319 /* OutputCoreAudio.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OutputCoreAudio.h; sourceTree = "<group>"; };
 		A1A0C0DE2E3700000000A001 /* CogOutput.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = CogOutput.h; sourceTree = "<group>"; };
+		A1A0C0DE2E3700000000A003 /* OutputDeviceRouting.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OutputDeviceRouting.h; sourceTree = "<group>"; };
+		A1A0C0DE2E3700000000A005 /* OutputDeviceRouting.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = OutputDeviceRouting.m; sourceTree = "<group>"; };
 		835DD26B2ACAF5AD0057E319 /* LICENSE.LGPL */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = LICENSE.LGPL; sourceTree = "<group>"; };
 		835DD26C2ACAF5AD0057E319 /* License.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = License.txt; sourceTree = "<group>"; };
 		835DD26D2ACAF5AD0057E319 /* lpc.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = lpc.h; sourceTree = "<group>"; };
@@ -394,6 +398,8 @@
 			children = (
 				835DD2662ACAF1D90057E319 /* OutputCoreAudio.h */,
 				A1A0C0DE2E3700000000A001 /* CogOutput.h */,
+				A1A0C0DE2E3700000000A003 /* OutputDeviceRouting.h */,
+				A1A0C0DE2E3700000000A005 /* OutputDeviceRouting.m */,
 				835DD2652ACAF1D90057E319 /* OutputCoreAudio.m */,
 			);
 			path = Output;
@@ -626,6 +632,7 @@
 				831A50142865A7FD0049CFE4 /* rsstate.hpp in Headers */,
 				835DD2682ACAF1D90057E319 /* OutputCoreAudio.h in Headers */,
 				A1A0C0DE2E3700000000A002 /* CogOutput.h in Headers */,
+				A1A0C0DE2E3700000000A004 /* OutputDeviceRouting.h in Headers */,
 				834A41AC287A90AB00EB9D9B /* channelmaps.h in Headers */,
 				83A3496D2D5C40490096D530 /* DSPFSurroundNode.h in Headers */,
 				83A3496B2D5C3F430096D530 /* DSPRubberbandNode.h in Headers */,
@@ -785,6 +792,7 @@
 				83084F012F5864AB00EC1777 /* DSPSignalsmithStretchNode.mm in Sources */,
 				8EC122600B993BD500C5B3AD /* ConverterNode.m in Sources */,
 				835DD2672ACAF1D90057E319 /* OutputCoreAudio.m in Sources */,
+				A1A0C0DE2E3700000000A006 /* OutputDeviceRouting.m in Sources */,
 				83A349722D5C41810096D530 /* FSurroundFilter.mm in Sources */,
 				83CB56662E06464D003DD379 /* NSDictionary+Optional.m in Sources */,
 				8E8D3D300CBAEE6E00135C1B /* AudioContainer.m in Sources */,
