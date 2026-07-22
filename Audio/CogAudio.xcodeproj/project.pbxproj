@@ -70,6 +70,7 @@
 		835C88B2279811A500E28EAE /* hdcd_decode2.c in Sources */ = {isa = PBXBuildFile; fileRef = 835C88B0279811A500E28EAE /* hdcd_decode2.c */; };
 		835DD2672ACAF1D90057E319 /* OutputCoreAudio.m in Sources */ = {isa = PBXBuildFile; fileRef = 835DD2652ACAF1D90057E319 /* OutputCoreAudio.m */; };
 		835DD2682ACAF1D90057E319 /* OutputCoreAudio.h in Headers */ = {isa = PBXBuildFile; fileRef = 835DD2662ACAF1D90057E319 /* OutputCoreAudio.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		A1A0C0DE2E3700000000A002 /* CogOutput.h in Headers */ = {isa = PBXBuildFile; fileRef = A1A0C0DE2E3700000000A001 /* CogOutput.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		835DD2722ACAF5AD0057E319 /* lpc.h in Headers */ = {isa = PBXBuildFile; fileRef = 835DD26D2ACAF5AD0057E319 /* lpc.h */; };
 		835DD2732ACAF5AD0057E319 /* util.h in Headers */ = {isa = PBXBuildFile; fileRef = 835DD26E2ACAF5AD0057E319 /* util.h */; };
 		835DD2742ACAF5AD0057E319 /* lpc.c in Sources */ = {isa = PBXBuildFile; fileRef = 835DD26F2ACAF5AD0057E319 /* lpc.c */; };
@@ -209,6 +210,7 @@
 		835C88B0279811A500E28EAE /* hdcd_decode2.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = hdcd_decode2.c; sourceTree = "<group>"; };
 		835DD2652ACAF1D90057E319 /* OutputCoreAudio.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = OutputCoreAudio.m; sourceTree = "<group>"; };
 		835DD2662ACAF1D90057E319 /* OutputCoreAudio.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OutputCoreAudio.h; sourceTree = "<group>"; };
+		A1A0C0DE2E3700000000A001 /* CogOutput.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = CogOutput.h; sourceTree = "<group>"; };
 		835DD26B2ACAF5AD0057E319 /* LICENSE.LGPL */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = LICENSE.LGPL; sourceTree = "<group>"; };
 		835DD26C2ACAF5AD0057E319 /* License.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = License.txt; sourceTree = "<group>"; };
 		835DD26D2ACAF5AD0057E319 /* lpc.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = lpc.h; sourceTree = "<group>"; };
@@ -391,6 +393,7 @@
 			isa = PBXGroup;
 			children = (
 				835DD2662ACAF1D90057E319 /* OutputCoreAudio.h */,
+				A1A0C0DE2E3700000000A001 /* CogOutput.h */,
 				835DD2652ACAF1D90057E319 /* OutputCoreAudio.m */,
 			);
 			path = Output;
@@ -622,6 +625,7 @@
 				17D21CA10B8BE4BA00D1EBDE /* BufferChain.h in Headers */,
 				831A50142865A7FD0049CFE4 /* rsstate.hpp in Headers */,
 				835DD2682ACAF1D90057E319 /* OutputCoreAudio.h in Headers */,
+				A1A0C0DE2E3700000000A002 /* CogOutput.h in Headers */,
 				834A41AC287A90AB00EB9D9B /* channelmaps.h in Headers */,
 				83A3496D2D5C40490096D530 /* DSPFSurroundNode.h in Headers */,
 				83A3496B2D5C3F430096D530 /* DSPRubberbandNode.h in Headers */,

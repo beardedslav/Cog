@@ -13,7 +13,7 @@
 #import <CoreAudio/AudioHardware.h>
 
 #import <CogAudio/Node.h>
-#import <CogAudio/OutputCoreAudio.h>
+#import <CogAudio/CogOutput.h>
 
 @interface OutputNode : Node {
 	AudioStreamBasicDescription format;
@@ -21,7 +21,7 @@
 
 	double amountPlayed;
 	double amountPlayedInterval;
-	OutputCoreAudio *output;
+	Node<CogOutput> *output;
 
 	BOOL paused;
 	BOOL started;

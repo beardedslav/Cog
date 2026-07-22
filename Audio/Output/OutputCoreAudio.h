@@ -34,13 +34,15 @@ using std::atomic_long;
 
 #import <CogAudio/SimpleBuffer.h>
 
+#import <CogAudio/CogOutput.h>
+
 //#define OUTPUT_LOG
 
 @class OutputNode;
 
 @class AudioChunk;
 
-@interface OutputCoreAudio : Node {
+@interface OutputCoreAudio : Node <CogOutput> {
 	OutputNode *outputController;
 
 	NSLock *outputLock;
