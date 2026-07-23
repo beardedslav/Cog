@@ -596,7 +596,11 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 
 			[self enqueuePendingAudio];
 
-			if(!started && !paused && prebufferReached) {
+			// Auto-start once the prebuffer fills. The started check alone is
+			// not enough: a user resume racing an in-place rebuild can set rate
+			// on the dead synchronizer and leave started == YES, so a live
+			// synchronizer still sitting at rate 0 also needs the restart here.
+			if(!paused && prebufferReached && (!started || [renderSynchronizer rate] == 0)) {
 				[self resume];
 			}
 
