@@ -500,11 +500,14 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	lastPts = kCMTimeZero;
 	outputPts = kCMTimeZero;
 	lastEnqueuedStreamTimestamp = 0.0;
-	[currentPtsLock unlock];
 	secondsLatency = 0.0;
+	[currentPtsLock unlock];
 
 	started = NO;
 	restarted = NO;
+
+	prebufferReached = NO;
+	prebufferSignaled = NO;
 
 	[self synchronizerBlock];
 }
@@ -548,7 +551,7 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 
 			[self enqueuePendingAudio];
 
-			if(!started && !paused) {
+			if(!started && !paused && prebufferReached) {
 				[self resume];
 			}
 
@@ -576,26 +579,38 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 - (void)synchronizerBlock {
 	NSLock *lock = currentPtsLock;
 	CMTime interval = CMTimeMakeWithSeconds(1.0 / 60.0, 1000000000);
+	__weak OutputAirPlay *weakSelf = self;
 	currentPtsObserver = [renderSynchronizer addPeriodicTimeObserverForInterval:interval
 	                                                                      queue:NULL
 	                                                                 usingBlock:^(CMTime time) {
+		                                                                 OutputAirPlay *strongSelf = weakSelf;
+		                                                                 if(!strongSelf) return;
+
+		                                                                 OutputNode *localOutputController;
+		                                                                 VisualizationController *localVisController;
+		                                                                 double latencySeconds;
+		                                                                 double enqueuedTimestamp;
+
 		                                                                 [lock lock];
-		                                                                 self->currentPts = time;
-		                                                                 CMTime latencyTime = CMTimeSubtract(self->outputPts, time);
-		                                                                 double enqueuedTimestamp = self->lastEnqueuedStreamTimestamp;
-		                                                                 [lock unlock];
-		                                                                 double latencySeconds = CMTimeGetSeconds(latencyTime);
+		                                                                 strongSelf->currentPts = time;
+		                                                                 CMTime latencyTime = CMTimeSubtract(strongSelf->outputPts, time);
+		                                                                 enqueuedTimestamp = strongSelf->lastEnqueuedStreamTimestamp;
+		                                                                 latencySeconds = CMTimeGetSeconds(latencyTime);
 		                                                                 if(latencySeconds < 0)
 			                                                                 latencySeconds = 0;
-		                                                                 self->secondsLatency = latencySeconds;
+		                                                                 strongSelf->secondsLatency = latencySeconds;
+		                                                                 localOutputController = strongSelf->outputController;
+		                                                                 localVisController = strongSelf->visController;
+		                                                                 [lock unlock];
+
 		                                                                 if(enqueuedTimestamp > 0) {
 			                                                                 double position = enqueuedTimestamp - latencySeconds;
 			                                                                 if(position > 0) {
-				                                                                 [self->outputController setAmountPlayed:position];
+				                                                                 [localOutputController setAmountPlayed:position];
 			                                                                 }
 		                                                                 }
-		                                                                 [self->visController postLatency:[self->outputController getVisLatency]];
-		                                                                 [self->visController postFullLatency:[self->outputController getTotalLatency]];
+		                                                                 [localVisController postLatency:[localOutputController getVisLatency]];
+		                                                                 [localVisController postFullLatency:[localOutputController getTotalLatency]];
 	                                                                 }];
 }
 
@@ -752,7 +767,11 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 
 - (double)latency {
 	double tail = [buffer listDuration] + [[downmixNode buffer] listDuration] + [[faderNode buffer] listDuration] + [[bufferNode buffer] listDuration];
-	double renderer = secondsLatency > 0 ? secondsLatency : 0;
+	double latencySnapshot;
+	[currentPtsLock lock];
+	latencySnapshot = secondsLatency;
+	[currentPtsLock unlock];
+	double renderer = latencySnapshot > 0 ? latencySnapshot : 0;
 	return renderer + tail;
 }
 
@@ -802,7 +821,10 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 			if(renderSynchronizer) {
 				if(shouldPlayOutBuffer && !commandStop) {
 					int compareVal = 0;
-					double drainLatency = self->secondsLatency >= 0 ? self->secondsLatency : 0;
+					double drainLatency;
+					[currentPtsLock lock];
+					drainLatency = self->secondsLatency >= 0 ? self->secondsLatency : 0;
+					[currentPtsLock unlock];
 					int compareMax = (((1000000 / 5000) * drainLatency) + (10000 / 5000)); // latency plus 10ms, divide by sleep intervals
 					do {
 						[currentPtsLock lock];
@@ -850,10 +872,13 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 			[bufferNode setShouldContinue:NO];
 			bufferNode = nil;
 		}
+		[currentPtsLock lock];
 		outputController = nil;
-		if(visController) {
-			[visController reset];
-			visController = nil;
+		VisualizationController *localVisController = visController;
+		visController = nil;
+		[currentPtsLock unlock];
+		if(localVisController) {
+			[localVisController reset];
 		}
 		prebufferReached = NO;
 		prebufferSignaled = NO;
@@ -876,7 +901,11 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 }
 
 - (void)resume {
-	[renderSynchronizer setRate:1.0 time:currentPts];
+	CMTime resumePts;
+	[currentPtsLock lock];
+	resumePts = currentPts;
+	[currentPtsLock unlock];
+	[renderSynchronizer setRate:1.0 time:resumePts];
 	paused = NO;
 	started = YES;
 }
