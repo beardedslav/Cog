@@ -50,6 +50,8 @@
 
 - (BOOL)setup;
 - (BOOL)setupWithInterval:(BOOL)resumeInterval;
++ (Class)backendClassForCurrentDevice;
+- (BOOL)backendMatchesCurrentDevice;
 - (void)process;
 - (void)close;
 - (void)seek:(double)time;

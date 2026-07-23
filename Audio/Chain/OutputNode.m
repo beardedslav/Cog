@@ -10,6 +10,8 @@
 #import "AudioPlayer.h"
 #import "BufferChain.h"
 #import "OutputCoreAudio.h"
+#import "OutputAirPlay.h"
+#import "OutputDeviceRouting.h"
 
 #import "DSPRubberbandNode.h"
 #import "DSPSignalsmithStretchNode.h"
@@ -31,6 +33,19 @@
 	VisualizationNode *visualizationNode;
 }
 
++ (Class)backendClassForCurrentDevice {
+	NSDictionary *device = [[[NSUserDefaultsController sharedUserDefaultsController] defaults] objectForKey:@"outputDevice"];
+	if(CogOutputDeviceDictIsAirPlay(device)) {
+		return [OutputAirPlay class];
+	}
+	return [OutputCoreAudio class];
+}
+
+- (BOOL)backendMatchesCurrentDevice {
+	if(!output) return YES;
+	return [output isKindOfClass:[OutputNode backendClassForCurrentDevice]];
+}
+
 - (BOOL)setup {
 	return [self setupWithInterval:NO];
 }
@@ -47,7 +62,9 @@
 	paused = YES;
 	started = NO;
 
-	output = [[OutputCoreAudio alloc] initWithController:self];
+	Class backendClass = [OutputNode backendClassForCurrentDevice];
+	DLog(@"Output backend for current device: %@", NSStringFromClass(backendClass));
+	output = [[backendClass alloc] initWithController:self];
 
 	if(![output setup]) {
 		output = nil;

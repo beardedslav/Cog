@@ -15,6 +15,8 @@
 
 #import "Logging.h"
 
+static void *kAudioPlayerContext = &kAudioPlayerContext;
+
 @implementation AudioPlayer {
 	BOOL stoppedRecently;
 }
@@ -38,9 +40,29 @@
 
 		atomic_init(&resettingNow, false);
 		atomic_init(&refCount, 0);
+
+		[[NSUserDefaultsController sharedUserDefaultsController] addObserver:self forKeyPath:@"values.outputDevice" options:0 context:kAudioPlayerContext];
 	}
 
 	return self;
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+	if(context != kAudioPlayerContext) {
+		[super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+		return;
+	}
+
+	if([keyPath isEqualToString:@"values.outputDevice"]) {
+		if(output && ![output backendMatchesCurrentDevice]) {
+			DLog(@"Output device crossed a transport boundary; restarting playback to switch backend");
+			[self restartPlaybackAtCurrentPosition];
+		}
+	}
+}
+
+- (void)dealloc {
+	[[NSUserDefaultsController sharedUserDefaultsController] removeObserver:self forKeyPath:@"values.outputDevice" context:kAudioPlayerContext];
 }
 
 - (void)setDelegate:(id)d {
@@ -77,6 +99,12 @@
 	ALog(@"Opening file for playback: %@ at seek offset %f%@", url, time, (paused) ? @", starting paused" : @"");
 
 	[self waitUntilCallbacksExit];
+	if(output && ![output backendMatchesCurrentDevice]) {
+		DLog(@"Rebuilding output for backend change");
+		[output setShouldContinue:NO];
+		[output close];
+		output = nil;
+	}
 	if(output) {
 		[output fadeOutBackground];
 	}
