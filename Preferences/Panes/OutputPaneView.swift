@@ -163,5 +163,7 @@ struct OutputPaneView: View {
                 Text("Binaural audio").bold()
             }
         }
+        .onAppear { deviceModel.startObserving(); deviceModel.loadDevices() }
+        .onDisappear { deviceModel.stopObserving() }
     }
 }

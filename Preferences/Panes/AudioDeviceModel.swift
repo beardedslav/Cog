@@ -1,24 +1,58 @@
 import Foundation
 import CoreAudio
+import AppKit
 
 final class AudioDeviceModel: ObservableObject {
     struct Device: Identifiable, Equatable {
         let id: Int      // AudioDeviceID stored as Int for UserDefaults compatibility
         let name: String
         let isAirPlay: Bool
+        var isDiscoveredOnly: Bool = false   // Bonjour-only; selecting arms the pending switch
     }
 
     private var isActive = true
+    private var observers: [NSObjectProtocol] = []
 
     @Published var devices: [Device] = []
     @Published var selectedDeviceID: Int = -1 {
-        didSet { guard isActive else { return }; saveSelection() }
+        didSet {
+            guard isActive else { return }
+            if let picked = devices.first(where: { $0.id == selectedDeviceID }), picked.isDiscoveredOnly {
+                AirPlayServiceBrowser.shared().armPendingSwitch(forDeviceName: picked.name)
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound")!)
+                // Snap back to the stored selection; the browser writes the
+                // real device once it materializes.
+                loadSelection(from: devices)
+                return
+            }
+            saveSelection()
+        }
     }
 
     deinit { isActive = false }
 
     init() {
         loadDevices()
+    }
+
+    func startObserving() {
+        guard observers.isEmpty else { return }
+        AirPlayServiceBrowser.shared().beginBrowsing()
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("AirPlayServiceBrowserDidUpdateNotification"),
+            object: nil, queue: .main) { [weak self] _ in self?.loadDevices() })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.loadSelection(from: self.devices)
+            })
+    }
+
+    func stopObserving() {
+        AirPlayServiceBrowser.shared().endBrowsingSoon()
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers.removeAll()
     }
 
     private var elementMain: AudioObjectPropertyElement {
@@ -56,6 +90,14 @@ final class AudioDeviceModel: ObservableObject {
             guard hasOutputStreams(deviceID) else { continue }
             result.append(Device(id: Int(deviceID), name: name,
                                  isAirPlay: transportType(deviceID) == kAudioDeviceTransportTypeAirPlay))
+        }
+
+        let materialized = Set(result.map { $0.name.trimmingCharacters(in: .whitespaces).lowercased() })
+        let discovered = AirPlayServiceBrowser.shared().discoveredNames
+        for (index, name) in discovered.enumerated() {
+            let key = name.trimmingCharacters(in: .whitespaces).lowercased()
+            if materialized.contains(key) { continue }
+            result.append(Device(id: -(1000 + index), name: name, isAirPlay: true, isDiscoveredOnly: true))
         }
 
         devices = result
@@ -118,7 +160,11 @@ final class AudioDeviceModel: ObservableObject {
         }
         if deviceList.contains(where: { $0.id == storedID }) {
             selectedDeviceID = storedID
-        } else if let match = deviceList.first(where: { $0.name == storedName }) {
+        } else if let match = deviceList.first(where: { $0.name == storedName && !$0.isDiscoveredOnly }) {
+            // Discovered-only devices are excluded here: assigning their
+            // synthetic id would re-enter selectedDeviceID's didSet on the
+            // isDiscoveredOnly branch and recurse into loadSelection forever.
+            // Synthetic ids must never be persisted via saveSelection either.
             selectedDeviceID = match.id
             saveSelection(deviceID: match.id, name: match.name)
         } else {
