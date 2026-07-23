@@ -17,8 +17,9 @@ extern NSNotificationName const AirPlayServiceBrowserDidUpdateNotification;
 
 + (AirPlayServiceBrowser *)sharedBrowser NS_SWIFT_NAME(shared());
 
-// Browsing runs while at least one picker needs it; endBrowsingSoon stops it
-// after a ~5 s grace window unless beginBrowsing is called again first.
+// Browsing runs while at least one picker needs it. Refcounted: beginBrowsing
+// holds, endBrowsingSoon releases after a ~5 s grace; the browser stops (and
+// posts a final update) only once the last hold is released.
 - (void)beginBrowsing;
 - (void)endBrowsingSoon;
 

@@ -17,7 +17,7 @@ NSNotificationName const AirPlayServiceBrowserDidUpdateNotification = @"AirPlayS
 @implementation AirPlayServiceBrowser {
 	nw_browser_t browser;
 	NSMutableSet<NSString *> *names;
-	NSUInteger browseGeneration;
+	NSInteger browseRefCount;
 	NSString *pendingName;
 	BOOL halListenerInstalled;
 	BOOL writingSelection;
@@ -55,7 +55,8 @@ static NSString *browseResultName(nw_browse_result_t result) {
 }
 
 - (void)beginBrowsing {
-	++browseGeneration;
+	// Refcounted: browsing runs while at least one picker holds a begin.
+	++browseRefCount;
 	if(browser) return;
 
 	nw_browse_descriptor_t descriptor = nw_browse_descriptor_create_bonjour_service("_airplay._tcp", NULL);
@@ -99,17 +100,24 @@ static NSString *browseResultName(nw_browse_result_t result) {
 }
 
 - (void)endBrowsingSoon {
-	NSUInteger generation = browseGeneration;
+	// Release this picker's hold after a ~5 s grace so a prompt re-open reuses
+	// the warm browser; stop only when the last hold is released.
 	__weak AirPlayServiceBrowser *weakSelf = self;
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 		AirPlayServiceBrowser *strongSelf = weakSelf;
 		if(!strongSelf) return;
-		if(generation != strongSelf->browseGeneration) return;
+		if(strongSelf->browseRefCount > 0) --strongSelf->browseRefCount;
+		if(strongSelf->browseRefCount > 0) return;
 		if(strongSelf->browser) {
 			nw_browser_cancel(strongSelf->browser);
 			strongSelf->browser = NULL;
 		}
-		[strongSelf->names removeAllObjects];
+		// Notify consumers so an open picker refreshes instead of showing the
+		// now-cleared names.
+		if([strongSelf->names count]) {
+			[strongSelf->names removeAllObjects];
+			[[NSNotificationCenter defaultCenter] postNotificationName:AirPlayServiceBrowserDidUpdateNotification object:strongSelf];
+		}
 	});
 }
 

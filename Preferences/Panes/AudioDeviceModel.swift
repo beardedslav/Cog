@@ -12,11 +12,15 @@ final class AudioDeviceModel: ObservableObject {
 
     private var isActive = true
     private var observers: [NSObjectProtocol] = []
+    // Set around programmatic refreshes (loadSelection); a programmatic
+    // assignment must never persist or arm — only a user pick may.
+    private var isProgrammaticUpdate = false
+    private var lastSeenOutputDevice: NSDictionary?
 
     @Published var devices: [Device] = []
     @Published var selectedDeviceID: Int = -1 {
         didSet {
-            guard isActive else { return }
+            guard isActive, !isProgrammaticUpdate else { return }
             if let picked = devices.first(where: { $0.id == selectedDeviceID }), picked.isDiscoveredOnly {
                 AirPlayServiceBrowser.shared().armPendingSwitch(forDeviceName: picked.name)
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound")!)
@@ -38,14 +42,21 @@ final class AudioDeviceModel: ObservableObject {
     func startObserving() {
         guard observers.isEmpty else { return }
         AirPlayServiceBrowser.shared().beginBrowsing()
+        lastSeenOutputDevice = UserDefaults.standard.dictionary(forKey: "outputDevice").map { $0 as NSDictionary }
         observers.append(NotificationCenter.default.addObserver(
             forName: NSNotification.Name("AirPlayServiceBrowserDidUpdateNotification"),
             object: nil, queue: .main) { [weak self] _ in self?.loadDevices() })
+        // React only when outputDevice actually changed (e.g. the browser wrote
+        // a freshly materialized sink). Re-enumerate so the new device is found
+        // by ID; loadSelection on a stale list would fall through and clobber.
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
-                self.loadSelection(from: self.devices)
+                let current = UserDefaults.standard.dictionary(forKey: "outputDevice").map { $0 as NSDictionary }
+                guard current != self.lastSeenOutputDevice else { return }
+                self.lastSeenOutputDevice = current
+                self.loadDevices()
             })
     }
 
@@ -149,7 +160,14 @@ final class AudioDeviceModel: ObservableObject {
         return transport
     }
 
+    // Programmatic refresh only: assigns selectedDeviceID without persisting or
+    // arming. Persistence stays with user picks (selectedDeviceID's didSet);
+    // re-affirming a stored value here would let a stale-list fall-through write
+    // {"", -1} and, during arming, disarm the pending switch.
     private func loadSelection(from deviceList: [Device]) {
+        isProgrammaticUpdate = true
+        defer { isProgrammaticUpdate = false }
+
         let stored = UserDefaults.standard.dictionary(forKey: "outputDevice")
         let storedID = (stored?["deviceID"] as? NSNumber)?.intValue ?? -1
         let storedName = stored?["name"] as? String ?? ""
@@ -164,9 +182,7 @@ final class AudioDeviceModel: ObservableObject {
             // Discovered-only devices are excluded here: assigning their
             // synthetic id would re-enter selectedDeviceID's didSet on the
             // isDiscoveredOnly branch and recurse into loadSelection forever.
-            // Synthetic ids must never be persisted via saveSelection either.
             selectedDeviceID = match.id
-            saveSelection(deviceID: match.id, name: match.name)
         } else {
             selectedDeviceID = -1
         }
