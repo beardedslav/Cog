@@ -5,6 +5,7 @@ final class AudioDeviceModel: ObservableObject {
     struct Device: Identifiable, Equatable {
         let id: Int      // AudioDeviceID stored as Int for UserDefaults compatibility
         let name: String
+        let isAirPlay: Bool
     }
 
     private var isActive = true
@@ -29,7 +30,7 @@ final class AudioDeviceModel: ObservableObject {
     }
 
     func loadDevices() {
-        var result: [Device] = [Device(id: -1, name: NSLocalizedString("System Default Device", comment: ""))]
+        var result: [Device] = [Device(id: -1, name: NSLocalizedString("System Default Device", comment: ""), isAirPlay: false)]
 
         // Get all device IDs
         var addr = AudioObjectPropertyAddress(
@@ -53,7 +54,8 @@ final class AudioDeviceModel: ObservableObject {
         for deviceID in deviceIDs {
             guard let name = deviceName(deviceID) else { continue }
             guard hasOutputStreams(deviceID) else { continue }
-            result.append(Device(id: Int(deviceID), name: name))
+            result.append(Device(id: Int(deviceID), name: name,
+                                 isAirPlay: transportType(deviceID) == kAudioDeviceTransportTypeAirPlay))
         }
 
         devices = result
@@ -91,6 +93,18 @@ final class AudioDeviceModel: ObservableObject {
         defer { ptr.deallocate() }
         guard AudioObjectGetPropertyData(deviceID, &addr, 0, nil, &bufSize, ptr) == noErr else { return false }
         return ptr.bindMemory(to: AudioBufferList.self, capacity: 1).pointee.mNumberBuffers > 0
+    }
+
+    private func transportType(_ deviceID: AudioDeviceID) -> UInt32 {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: elementMain
+        )
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(deviceID, &addr, 0, nil, &size, &transport) == noErr else { return 0 }
+        return transport
     }
 
     private func loadSelection(from deviceList: [Device]) {
