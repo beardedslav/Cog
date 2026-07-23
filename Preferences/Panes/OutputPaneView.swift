@@ -89,8 +89,10 @@ struct OutputPaneView: View {
     private var formContent: some View {
         Form {
             Picker("Output device:", selection: $deviceModel.selectedDeviceID) {
-                ForEach(deviceModel.devices.filter { !$0.isAirPlay }) { device in
-                    Text(device.name).tag(device.id)
+                Section(header: Text("Local")) {
+                    ForEach(deviceModel.devices.filter { !$0.isAirPlay }) { device in
+                        Text(device.name).tag(device.id)
+                    }
                 }
                 if deviceModel.devices.contains(where: { $0.isAirPlay }) {
                     Section(header: Text("AirPlay")) {
