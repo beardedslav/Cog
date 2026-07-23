@@ -151,18 +151,33 @@ static NSUInteger routeDetectionGeneration = 0;
 	defaultItem.representedObject = @{ @"name": @"", @"deviceID": @(-1) };
 	if(currentID == -1) defaultItem.state = NSControlStateValueOn;
 
+	NSString *currentName = current ? current[@"name"] : nil;
 	NSMutableArray<NSMenuItem *> *airPlayItems = [NSMutableArray array];
+	__block BOOL matchedByID = NO;
+	__block NSMenuItem *nameFallbackItem = nil;
 	[AirPlayItem enumerateOutputDevices:^(NSString *name, AudioDeviceID deviceID, BOOL isAirPlay) {
 		NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:name action:@selector(selectDevice:) keyEquivalent:@""];
 		item.target = self;
 		item.representedObject = @{ @"name": name, @"deviceID": @((int)deviceID) };
-		if(currentID == (int)deviceID) item.state = NSControlStateValueOn;
+		if(currentID == (int)deviceID) {
+			item.state = NSControlStateValueOn;
+			matchedByID = YES;
+		} else if(!nameFallbackItem && [currentName length] && [currentName isEqualToString:name]) {
+			nameFallbackItem = item;
+		}
 		if(isAirPlay) {
 			[airPlayItems addObject:item];
 		} else {
 			[menu addItem:item];
 		}
 	}];
+
+	// The stored deviceID can go stale across reboots/route churn. The button
+	// tint (CogOutputDeviceDictIsAirPlay) already falls back to name matching
+	// in that case; mirror it for the checkmark.
+	if(currentID != -1 && !matchedByID && nameFallbackItem) {
+		nameFallbackItem.state = NSControlStateValueOn;
+	}
 
 	[menu addItem:[NSMenuItem separatorItem]];
 	NSMenuItem *airPlayHeader = [menu addItemWithTitle:NSLocalizedString(@"AirPlay", @"") action:nil keyEquivalent:@""];
