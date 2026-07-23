@@ -179,6 +179,17 @@
         }
       }
     },
+    "NSLocalNetworkUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cog looks for AirPlay speakers on your network so it can list them in the output device menu."
+          }
+        }
+      }
+    },
     "NSMicrophoneUsageDescription" : {
       "comment" : "Privacy - Microphone Usage Description",
       "extractionState" : "extracted_with_value",

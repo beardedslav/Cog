@@ -2204,12 +2204,18 @@
 	</dict>
 	<key>NSAppleScriptEnabled</key>
 	<string>YES</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_airplay._tcp</string>
+	</array>
 	<key>NSCalendarsUsageDescription</key>
 	<string>Cog has no use for your calendar information. Why are you trying to open your Calendar with an audio player?</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Cog is an audio player. It will never use your camera. Why is it asking for permission to use your camera?</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Cog has no use for your contacts information. Why are you trying to open your contacts with an audio player?</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Cog looks for AirPlay speakers on your network so it can list them in the output device menu.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>Cog has no use for your location information. Something is obviously wrong with the application.</string>
 	<key>NSMainNibFile</key>
