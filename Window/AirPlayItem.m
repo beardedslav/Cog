@@ -10,6 +10,8 @@
 
 #import <CogAudio/OutputDeviceRouting.h>
 
+#import "AirPlayServiceBrowser.h"
+
 static void *kAirPlayItemContext = &kAirPlayItemContext;
 
 // One detector shared by every toolbar item: active route detection is
@@ -138,6 +140,12 @@ static NSUInteger routeDetectionGeneration = 0;
 	++routeDetectionGeneration;
 	routeDetector.routeDetectionEnabled = YES;
 
+	AirPlayServiceBrowser *serviceBrowser = [AirPlayServiceBrowser sharedBrowser];
+	[serviceBrowser beginBrowsing];
+	// Bounded warm-up so a cold first open can still list devices; near-zero
+	// cost when results are already in from the grace window.
+	[serviceBrowser waitForFirstResultsUpTo:0.7];
+
 	NSMenu *menu = [[NSMenu alloc] initWithTitle:NSLocalizedString(@"AirPlay", @"")];
 	NSDictionary *current = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"outputDevice"];
 	NSNumber *currentIDNum = current ? current[@"deviceID"] : nil;
@@ -183,8 +191,30 @@ static NSUInteger routeDetectionGeneration = 0;
 	NSMenuItem *airPlayHeader = [menu addItemWithTitle:NSLocalizedString(@"AirPlay", @"") action:nil keyEquivalent:@""];
 	airPlayHeader.enabled = NO;
 
-	if([airPlayItems count]) {
+	// Bonjour-discovered sinks macOS has not materialized yet, minus any name
+	// already present as a CoreAudio device (case/whitespace-insensitive).
+	NSMutableArray<NSString *> *materializedNames = [NSMutableArray array];
+	for(NSMenuItem *item in airPlayItems) {
+		[materializedNames addObject:[item.title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].lowercaseString];
+	}
+	NSMutableArray<NSMenuItem *> *discoveredItems = [NSMutableArray array];
+	for(NSString *name in [serviceBrowser discoveredNames]) {
+		NSString *key = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].lowercaseString;
+		if([materializedNames containsObject:key]) continue;
+		NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:name action:@selector(selectDiscoveredDevice:) keyEquivalent:@""];
+		item.target = self;
+		item.representedObject = name;
+		if([name isEqualToString:[serviceBrowser pendingDeviceName]]) {
+			item.state = NSControlStateValueMixed;
+		}
+		[discoveredItems addObject:item];
+	}
+
+	if([airPlayItems count] || [discoveredItems count]) {
 		for(NSMenuItem *item in airPlayItems) {
+			[menu addItem:item];
+		}
+		for(NSMenuItem *item in discoveredItems) {
 			[menu addItem:item];
 		}
 	} else if(routeDetector.multipleRoutesDetected) {
@@ -209,11 +239,22 @@ static NSUInteger routeDetectionGeneration = 0;
 			sharedRouteDetector().routeDetectionEnabled = NO;
 		}
 	});
+
+	[serviceBrowser endBrowsingSoon];
 }
 
 - (void)selectDevice:(NSMenuItem *)sender {
 	NSDictionary *device = sender.representedObject;
 	[[NSUserDefaults standardUserDefaults] setObject:device forKey:@"outputDevice"];
+}
+
+- (void)selectDiscoveredDevice:(NSMenuItem *)sender {
+	NSString *name = sender.representedObject;
+	// The sink is not a CoreAudio device yet; remember the pick and send the
+	// user to Sound settings to activate it. The browser switches the output
+	// automatically the moment the device materializes.
+	[[AirPlayServiceBrowser sharedBrowser] armPendingSwitchForDeviceName:name];
+	[self openSoundSettings:sender];
 }
 
 - (void)openSoundSettings:(id)sender {
