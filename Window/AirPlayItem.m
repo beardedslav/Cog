@@ -12,9 +12,24 @@
 
 static void *kAirPlayItemContext = &kAirPlayItemContext;
 
+// One detector shared by every toolbar item: active route detection is
+// documented as significantly increasing power consumption, so it only runs
+// while a device menu is open, plus a short grace period so an immediate
+// re-open sees completed detection.
+static AVRouteDetector *sharedRouteDetector(void) {
+	static AVRouteDetector *detector;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		detector = [AVRouteDetector new];
+	});
+	return detector;
+}
+
+// Main-thread only; invalidates any pending delayed disable when bumped.
+static NSUInteger routeDetectionGeneration = 0;
+
 @interface AirPlayItem ()
 @property(nonatomic, strong) NSButton *button;
-@property(nonatomic, strong) AVRouteDetector *routeDetector;
 @end
 
 @implementation AirPlayItem
@@ -41,15 +56,11 @@ static void *kAirPlayItemContext = &kAirPlayItemContext;
 	self.button = button;
 	[self setView:button];
 
-	self.routeDetector = [AVRouteDetector new];
-	self.routeDetector.routeDetectionEnabled = YES;
-
 	[[NSUserDefaultsController sharedUserDefaultsController] addObserver:self forKeyPath:@"values.outputDevice" options:NSKeyValueObservingOptionInitial context:kAirPlayItemContext];
 }
 
 - (void)dealloc {
 	[[NSUserDefaultsController sharedUserDefaultsController] removeObserver:self forKeyPath:@"values.outputDevice" context:kAirPlayItemContext];
-	self.routeDetector.routeDetectionEnabled = NO;
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
@@ -123,6 +134,10 @@ static void *kAirPlayItemContext = &kAirPlayItemContext;
 }
 
 - (void)showDeviceMenu:(id)sender {
+	AVRouteDetector *routeDetector = sharedRouteDetector();
+	++routeDetectionGeneration;
+	routeDetector.routeDetectionEnabled = YES;
+
 	NSMenu *menu = [[NSMenu alloc] initWithTitle:NSLocalizedString(@"AirPlay", @"")];
 	NSDictionary *current = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"outputDevice"];
 	NSNumber *currentIDNum = current ? current[@"deviceID"] : nil;
@@ -157,7 +172,7 @@ static void *kAirPlayItemContext = &kAirPlayItemContext;
 		for(NSMenuItem *item in airPlayItems) {
 			[menu addItem:item];
 		}
-	} else if(self.routeDetector.multipleRoutesDetected) {
+	} else if(routeDetector.multipleRoutesDetected) {
 		// Routes exist but macOS has not materialized them as CoreAudio
 		// devices yet; send the user to Sound settings to activate one.
 		NSMenuItem *item = [menu addItemWithTitle:NSLocalizedString(@"Open Sound Settings…", @"") action:@selector(openSoundSettings:) keyEquivalent:@""];
@@ -168,6 +183,17 @@ static void *kAirPlayItemContext = &kAirPlayItemContext;
 	}
 
 	[menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, self.button.bounds.size.height) inView:self.button];
+
+	// popUpMenuPositioningItem blocks while the menu tracks, so the menu is
+	// closed here. A freshly enabled detector may not have completed detection
+	// before the menu above was built, so hold detection on for a grace window
+	// — a prompt re-open then reflects the finished scan — before disabling.
+	NSUInteger generation = ++routeDetectionGeneration;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		if(generation == routeDetectionGeneration) {
+			sharedRouteDetector().routeDetectionEnabled = NO;
+		}
+	});
 }
 
 - (void)selectDevice:(NSMenuItem *)sender {

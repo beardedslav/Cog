@@ -61,6 +61,7 @@ the log around it, note the exact row, and hand it to the session — it should 
 | A13 | Multi-room | While Cog plays to speaker 1, group it with speaker 2 in Control Center | Both play; Cog unaffected |
 | A14 | Toolbar button visual | All three windows (main, mini, mini plus): button present (next to shuffle/repeat, before Spectrum), menu shows Local/AirPlay sections with checkmark, icon tints with accent while on AirPlay | As described (this was never visually verified — session lacked screen permissions) |
 | A15 | Stress: rapid switching | Click through several devices quickly in the toolbar menu | Serialized restarts, ends on last selection, no hang/crash |
+| A16 | **Route-detector fallback** (new, after B1) | With AirPlay routes on the network but none materialized as a CoreAudio device, open the toolbar menu; close it and reopen within ~5 s | "Open Sound Settings…" item appears, at least on the second open (detection now runs only while the menu is open plus a short grace window) |
 
 Known v1 deferrals — expected behavior, do NOT report as bugs: route-loss
 feedback is log-only; gapless across sample-rate changes on AirPlay may gap;
