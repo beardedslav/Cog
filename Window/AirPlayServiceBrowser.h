@@ -31,6 +31,13 @@ extern NSNotificationName const AirPlayServiceBrowserDidUpdateNotification;
 // results are available.
 - (BOOL)waitForFirstResultsUpTo:(NSTimeInterval)timeout;
 
+// Pending auto-switch: remembers an un-materialized sink the user picked and
+// selects it the moment macOS materializes a matching AirPlay CoreAudio
+// device. Armed until superseded (any other outputDevice selection or a
+// newer pick) or app quit. Session-scoped; never persisted.
+- (void)armPendingSwitchForDeviceName:(NSString *)name;
+@property (nonatomic, readonly, nullable) NSString *pendingDeviceName;
+
 @end
 
 NS_ASSUME_NONNULL_END

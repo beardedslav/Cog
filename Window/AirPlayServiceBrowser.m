@@ -5,6 +5,9 @@
 
 #import "AirPlayServiceBrowser.h"
 
+#import <CoreAudio/AudioHardware.h>
+
+#import <CogAudio/OutputDeviceRouting.h>
 #import <Network/Network.h>
 
 #import "Logging.h"
@@ -15,6 +18,11 @@ NSNotificationName const AirPlayServiceBrowserDidUpdateNotification = @"AirPlayS
 	nw_browser_t browser;
 	NSMutableSet<NSString *> *names;
 	NSUInteger browseGeneration;
+	NSString *pendingName;
+	BOOL halListenerInstalled;
+	BOOL writingSelection;
+	AudioObjectPropertyListenerBlock halListenerBlock;
+	NSDictionary *lastSeenSelection;
 }
 
 + (AirPlayServiceBrowser *)sharedBrowser {
@@ -112,6 +120,87 @@ static NSString *browseResultName(nw_browse_result_t result) {
 		                         beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
 	}
 	return [names count] > 0;
+}
+
+- (NSString *)pendingDeviceName {
+	return pendingName;
+}
+
+- (void)armPendingSwitchForDeviceName:(NSString *)name {
+	if(![name length]) return;
+	pendingName = [name copy];
+	[self installHalListenerIfNeeded];
+	[self installDefaultsObserverIfNeeded];
+	[self checkPendingSwitch];
+}
+
+- (void)disarmPendingSwitch {
+	pendingName = nil;
+	if(halListenerInstalled) {
+		AudioObjectPropertyAddress theAddress = {
+			.mSelector = kAudioHardwarePropertyDevices,
+			.mScope = kAudioObjectPropertyScopeGlobal,
+			.mElement = kAudioObjectPropertyElementMaster
+		};
+		AudioObjectRemovePropertyListenerBlock(kAudioObjectSystemObject, &theAddress, dispatch_get_main_queue(), halListenerBlock);
+		halListenerInstalled = NO;
+	}
+}
+
+- (void)installHalListenerIfNeeded {
+	if(halListenerInstalled) return;
+	if(!halListenerBlock) {
+		__weak AirPlayServiceBrowser *weakSelf = self;
+		halListenerBlock = ^(UInt32 inNumberAddresses, const AudioObjectPropertyAddress *inAddresses) {
+			[weakSelf checkPendingSwitch];
+		};
+	}
+	AudioObjectPropertyAddress theAddress = {
+		.mSelector = kAudioHardwarePropertyDevices,
+		.mScope = kAudioObjectPropertyScopeGlobal,
+		.mElement = kAudioObjectPropertyElementMaster
+	};
+	if(AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &theAddress, dispatch_get_main_queue(), halListenerBlock) == noErr) {
+		halListenerInstalled = YES;
+	}
+}
+
+// Any outputDevice change that we did not write ourselves supersedes the
+// pending pick (covers both pickers and System Default selection).
+- (void)installDefaultsObserverIfNeeded {
+	static BOOL installed = NO;
+	if(installed) return;
+	installed = YES;
+	[[NSNotificationCenter defaultCenter] addObserver:self
+	                                         selector:@selector(defaultsDidChange:)
+	                                             name:NSUserDefaultsDidChangeNotification
+	                                           object:[NSUserDefaults standardUserDefaults]];
+	lastSeenSelection = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"outputDevice"];
+}
+
+- (void)defaultsDidChange:(NSNotification *)notification {
+	NSDictionary *current = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"outputDevice"];
+	BOOL selectionChanged = (current != lastSeenSelection) && ![current isEqualToDictionary:lastSeenSelection ?: @{}];
+	lastSeenSelection = current;
+	if(selectionChanged && !writingSelection && pendingName) {
+		DLog(@"Pending AirPlay switch superseded by a direct device selection");
+		[self disarmPendingSwitch];
+	}
+}
+
+- (void)checkPendingSwitch {
+	if(!pendingName) return;
+	AudioDeviceID matched = CogDeviceIDMatchingName(pendingName);
+	if(matched == kAudioObjectUnknown) return;
+	if(CogDeviceTransportType(matched) != kAudioDeviceTransportTypeAirPlay) return;
+
+	DLog(@"Pending AirPlay device \"%@\" materialized as %u; switching output", pendingName, matched);
+	NSString *name = pendingName;
+	[self disarmPendingSwitch];
+	writingSelection = YES;
+	[[NSUserDefaults standardUserDefaults] setObject:@{ @"name": name, @"deviceID": @((int)matched) }
+	                                          forKey:@"outputDevice"];
+	writingSelection = NO;
 }
 
 @end
