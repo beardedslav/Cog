@@ -28,7 +28,7 @@
 	uint32_t outputChannelConfig;
 
 	float fadeLevel, fadeStep;
-	BOOL doPMode;
+	_Atomic(BOOL) doPMode;
 
 	float inBuffer[512 * 32];
 	float outBuffer[512 * 32];
@@ -261,9 +261,12 @@
 }
 
 - (void)setDoPMode:(BOOL)enabled {
-	[mutex lock];
+	// Atomic store, deliberately NOT taking `mutex`: the main thread calls this
+	// mid chain-open (OutputCoreAudio prepareForInputFormat:), while convert can
+	// hold `mutex` across a peekFormat wait that only ends once that chain open
+	// finishes feeding the graph — taking the lock here deadlocks playback
+	// startup on a fresh output.
 	doPMode = enabled;
-	[mutex unlock];
 }
 
 - (float)fadeLevel {
