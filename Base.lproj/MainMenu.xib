@@ -1207,6 +1207,11 @@
                             </connections>
                         </button>
                     </toolbarItem>
+                    <toolbarItem implicitItemIdentifier="7E2F5A10-9C4B-4D6E-8F3A-52B1C9D0E401" label="AirPlay" paletteLabel="AirPlay" tag="-1" bordered="YES" id="apm-Bt-n01" customClass="AirPlayItem">
+                        <nil key="toolTip"/>
+                        <size key="minSize" width="40" height="26"/>
+                        <size key="maxSize" width="40" height="26"/>
+                    </toolbarItem>
                     <toolbarItem implicitItemIdentifier="80D8CDBD-A6E9-47A6-B9C0-213C450E45FA" label="Spectrum" paletteLabel="Spectrum" tag="-1" bordered="YES" id="NtB-XF-g07" customClass="SpectrumItem">
                         <nil key="toolTip"/>
                         <size key="minSize" width="64" height="26"/>
@@ -1231,6 +1236,7 @@
                     <toolbarItem reference="1636"/>
                     <toolbarItem reference="1639"/>
                     <toolbarItem reference="2466"/>
+                    <toolbarItem reference="apm-Bt-n01"/>
                     <toolbarItem reference="1552"/>
                     <toolbarItem reference="1630"/>
                     <toolbarItem reference="1629"/>
@@ -1464,6 +1470,11 @@
                             </connections>
                         </button>
                     </toolbarItem>
+                    <toolbarItem implicitItemIdentifier="7E2F5A10-9C4B-4D6E-8F3A-52B1C9D0E402" label="AirPlay" paletteLabel="AirPlay" tag="-1" bordered="YES" id="apm-Bt-n02" customClass="AirPlayItem">
+                        <nil key="toolTip"/>
+                        <size key="minSize" width="40" height="26"/>
+                        <size key="maxSize" width="40" height="26"/>
+                    </toolbarItem>
                     <toolbarItem implicitItemIdentifier="09140C29-FF34-4BF2-92C8-54C7D9AA4A27" label="Spectrum" paletteLabel="Spectrum" tag="-1" bordered="YES" id="sf3-l1-fJw" customClass="SpectrumItem">
                         <nil key="toolTip"/>
                         <size key="minSize" width="64" height="26"/>
@@ -1483,6 +1494,7 @@
                     <toolbarItem reference="2429"/>
                     <toolbarItem reference="2278"/>
                     <toolbarItem reference="2279"/>
+                    <toolbarItem reference="apm-Bt-n02"/>
                     <toolbarItem reference="2228"/>
                     <toolbarItem reference="2274"/>
                     <toolbarItem reference="2273"/>
@@ -1650,6 +1662,11 @@
                             </connections>
                         </button>
                     </toolbarItem>
+                    <toolbarItem implicitItemIdentifier="7E2F5A10-9C4B-4D6E-8F3A-52B1C9D0E403" label="AirPlay" paletteLabel="AirPlay" tag="-1" bordered="YES" id="apm-Bt-n03" customClass="AirPlayItem">
+                        <nil key="toolTip"/>
+                        <size key="minSize" width="40" height="26"/>
+                        <size key="maxSize" width="40" height="26"/>
+                    </toolbarItem>
                     <toolbarItem implicitItemIdentifier="A1B2C3D4-0008-7890-ABCD-EF1234567898" label="Normal Mode" paletteLabel="Normal Mode" image="miniModeOffTemplate" sizingBehavior="auto" id="3125">
                         <nil key="toolTip"/>
                         <button key="view" verticalHuggingPriority="750" id="3126">
@@ -1673,6 +1690,7 @@
                     <toolbarItem reference="3103"/>
                     <toolbarItem reference="3116"/>
                     <toolbarItem reference="3119"/>
+                    <toolbarItem reference="apm-Bt-n03"/>
                     <toolbarItem reference="3103"/>
                     <toolbarItem reference="3110"/>
                     <toolbarItem reference="3107"/>

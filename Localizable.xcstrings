@@ -4,6 +4,19 @@
     "" : {
       "shouldTranslate" : false
     },
+    "AirPlay" : {
+      "extractionState" : "manual"
+    },
+    "Local" : {
+      "comment" : "AirPlay menu section header for wired/built-in devices",
+      "extractionState" : "manual"
+    },
+    "No AirPlay devices found" : {
+      "extractionState" : "manual"
+    },
+    "Open Sound Settings…" : {
+      "extractionState" : "manual"
+    },
     "%1d day(s)" : {
       "comment" : "day for total",
       "localizations" : {
