@@ -42,7 +42,6 @@
 	BOOL commandStop;
 
 	BOOL cutOffInput;
-	BOOL faded;
 	BOOL pendingFlush;
 	BOOL shouldPlayOutBuffer;
 
@@ -66,7 +65,6 @@
 
 	BOOL DSPsLaunched;
 
-	double streamTimestamp;
 	double lastEnqueuedStreamTimestamp;
 	double secondsLatency;
 	double secondsHdcdSustained;
@@ -88,7 +86,6 @@
 	AVSampleBufferRenderSynchronizer *renderSynchronizer;
 	id currentPtsObserver;
 	CMTime currentPts;
-	CMTime lastPts;
 	CMTime outputPts;
 
 	DSPDownmixNode *downmixNode;

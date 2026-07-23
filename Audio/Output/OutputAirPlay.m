@@ -296,41 +296,7 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	if(err != noErr) {
 		// Try matching by name.
 		NSString *userDeviceName = deviceDict[@"name"];
-		AudioDeviceID matched = kAudioObjectUnknown;
-		if([userDeviceName length]) {
-			AudioObjectPropertyAddress theAddress = {
-				.mSelector = kAudioHardwarePropertyDevices,
-				.mScope = kAudioObjectPropertyScopeGlobal,
-				.mElement = kAudioObjectPropertyElementMaster
-			};
-			UInt32 propsize = 0;
-			if(AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &theAddress, 0, NULL, &propsize) == noErr) {
-				UInt32 nDevices = propsize / (UInt32)sizeof(AudioDeviceID);
-				AudioDeviceID *devids = (AudioDeviceID *)malloc(propsize);
-				if(devids && AudioObjectGetPropertyData(kAudioObjectSystemObject, &theAddress, 0, NULL, &propsize, devids) == noErr) {
-					for(UInt32 i = 0; i < nDevices; ++i) {
-						CFStringRef name = NULL;
-						UInt32 size = sizeof(name);
-						theAddress.mSelector = kAudioDevicePropertyDeviceNameCFString;
-						theAddress.mScope = kAudioDevicePropertyScopeOutput;
-						if(AudioObjectGetPropertyData(devids[i], &theAddress, 0, NULL, &size, &name) != noErr || !name) {
-							theAddress.mSelector = kAudioHardwarePropertyDevices;
-							theAddress.mScope = kAudioObjectPropertyScopeGlobal;
-							continue;
-						}
-						BOOL matches = [userDeviceName isEqualToString:(__bridge NSString *)name];
-						CFRelease(name);
-						theAddress.mSelector = kAudioHardwarePropertyDevices;
-						theAddress.mScope = kAudioObjectPropertyScopeGlobal;
-						if(matches) {
-							matched = devids[i];
-							break;
-						}
-					}
-				}
-				if(devids) free(devids);
-			}
-		}
+		AudioDeviceID matched = CogDeviceIDMatchingName(userDeviceName);
 		if(matched != kAudioObjectUnknown) {
 			err = [self setOutputDeviceByID:(int)matched];
 			DLog(@"Found output device: \"%@\" (%d).", userDeviceName, matched);
@@ -525,7 +491,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 
 	[currentPtsLock lock];
 	currentPts = kCMTimeZero;
-	lastPts = kCMTimeZero;
 	outputPts = kCMTimeZero;
 	lastEnqueuedStreamTimestamp = 0.0;
 	secondsLatency = 0.0;
@@ -716,7 +681,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 
 	[currentPtsLock lock];
 	currentPts = kCMTimeZero;
-	lastPts = kCMTimeZero;
 	outputPts = kCMTimeZero;
 	[currentPtsLock unlock];
 
@@ -766,7 +730,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 		// renderer fills.
 		[currentPtsLock lock];
 		currentPts = kCMTimeZero;
-		lastPts = kCMTimeZero;
 		outputPts = kCMTimeZero;
 		lastEnqueuedStreamTimestamp = 0.0;
 		secondsLatency = 0.0;
@@ -786,6 +749,10 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	}
 }
 
+// Never re-setup an instance that has been stopped: doStop's Phase 2 runs
+// with the monitor released, so a setup started in that window would
+// interleave with teardown. Currently unreachable — OutputNode always
+// allocates a fresh backend instance instead of reusing one.
 - (BOOL)setup {
 	if(audioRenderer || renderSynchronizer)
 		[self stop];
@@ -813,10 +780,8 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 		outputDeviceID = -1;
 
 		cutOffInput = NO;
-		faded = NO;
 		pendingFlush = NO;
 
-		streamTimestamp = 0.0;
 		lastEnqueuedStreamTimestamp = 0.0;
 		secondsLatency = 0.0;
 		prebufferReached = NO;
@@ -920,9 +885,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 }
 
 - (void)doStop {
-	if(stopInvoked) {
-		return;
-	}
 	// Phase 1 (monitor held): publish the stop request and detach every observer
 	// and CoreAudio listener, atomically with respect to the feeder thread's own
 	// monitor-guarded work (rebuildRenderer). We MUST NOT wait for the feeder to
@@ -930,6 +892,9 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	// entry to rebuildRenderer, and a feeder blocked there would never reach the
 	// point where it publishes `stopped`, deadlocking this busy-wait.
 	@synchronized(self) {
+		if(stopInvoked) {
+			return;
+		}
 		stopInvoked = YES;
 		if(observersapplied) {
 			[[NSUserDefaultsController sharedUserDefaultsController] removeObserver:self forKeyPath:@"values.outputDevice" context:kOutputAirPlayContext];
@@ -971,7 +936,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	// here, so nothing the feeder touches while draining has been freed yet.
 	if(running) {
 		while(!stopped) {
-			stopping = YES;
 			usleep(5000);
 		}
 	}
@@ -1082,7 +1046,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 - (void)fadeOut {
 	// AirPlay routes buffer seconds ahead; an in-band fade would only be
 	// audible after that buffer drains, so halt the synchronizer instead.
-	faded = YES;
 	[self pause];
 }
 
@@ -1121,7 +1084,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 }
 
 - (void)fadeIn {
-	faded = NO;
 	[self resume];
 }
 
@@ -1132,7 +1094,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 		[faderNode waitForReset];
 	}
 	[faderNode setPreviousNode:downmixNode];
-	faded = NO;
 	prebufferSignaled = NO;
 }
 

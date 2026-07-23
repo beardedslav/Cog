@@ -61,7 +61,7 @@ static BOOL deviceIsAlive(AudioDeviceID deviceID) {
 	return err == noErr && isAlive;
 }
 
-static AudioDeviceID deviceIDMatchingName(NSString *name) {
+AudioDeviceID CogDeviceIDMatchingName(NSString *name) {
 	if(![name length]) {
 		return kAudioObjectUnknown;
 	}
@@ -118,7 +118,7 @@ BOOL CogOutputDeviceDictIsAirPlay(NSDictionary *deviceDict) {
 		if(deviceIsAlive((AudioDeviceID)storedID)) {
 			deviceID = (AudioDeviceID)storedID;
 		} else {
-			deviceID = deviceIDMatchingName([deviceDict objectForKey:@"name"]);
+			deviceID = CogDeviceIDMatchingName([deviceDict objectForKey:@"name"]);
 		}
 	}
 
