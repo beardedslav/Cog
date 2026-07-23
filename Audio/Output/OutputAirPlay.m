@@ -919,6 +919,12 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	if(stopInvoked) {
 		return;
 	}
+	// Phase 1 (monitor held): publish the stop request and detach every observer
+	// and CoreAudio listener, atomically with respect to the feeder thread's own
+	// monitor-guarded work (rebuildRenderer). We MUST NOT wait for the feeder to
+	// exit while holding the monitor: the feeder acquires this same monitor on
+	// entry to rebuildRenderer, and a feeder blocked there would never reach the
+	// point where it publishes `stopped`, deadlocking this busy-wait.
 	@synchronized(self) {
 		stopInvoked = YES;
 		if(observersapplied) {
@@ -952,6 +958,26 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 			}
 			currentdevicelistenerapplied = NO;
 		}
+	}
+
+	// Phase 2 (monitor released): join the feeder thread. With `stopping`
+	// published and the monitor free, a feeder about to rebuild early-returns
+	// from rebuildRenderer, and a feeder anywhere in its loop hits `if(stopping)
+	// break`; either way it reaches `stopped = YES`. The renderer is still alive
+	// here, so nothing the feeder touches while draining has been freed yet.
+	if(running) {
+		while(!stopped) {
+			stopping = YES;
+			usleep(5000);
+		}
+	}
+
+	// Phase 3 (monitor re-acquired): the feeder has exited (or never launched),
+	// so teardown can no longer race it. Drain any audio still queued in the live
+	// renderer, then release the renderer/synchronizer pair and the rest of the
+	// graph. Re-entering the monitor keeps this serialized against a concurrent
+	// doStop (benign, idempotent) and any lingering monitor-guarded caller.
+	@synchronized(self) {
 		if(renderSynchronizer || audioRenderer) {
 			if(renderSynchronizer) {
 				if(shouldPlayOutBuffer && !commandStop) {
@@ -984,12 +1010,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 			}
 			renderSynchronizer = nil;
 			audioRenderer = nil;
-		}
-		if(running) {
-			while(!stopped) {
-				stopping = YES;
-				usleep(5000);
-			}
 		}
 		if(audioFormatDescription) {
 			CFRelease(audioFormatDescription);
