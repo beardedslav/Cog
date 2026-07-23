@@ -92,15 +92,43 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 		[self setOutputDeviceWithDeviceDict:device];
 	} else if([keyPath isEqualToString:@"status"]) {
 		if(audioRenderer && [audioRenderer status] == AVQueuedSampleBufferRenderingStatusFailed) {
-			ALog(@"AirPlay renderer failed: %@", [audioRenderer error]);
-			// Fall back to the system default device. This retriggers device
-			// observers everywhere, including the backend re-selection in
-			// AudioPlayer if the default route is not AirPlay.
-			dispatch_async(dispatch_get_main_queue(), ^{
-				[[[NSUserDefaultsController sharedUserDefaultsController] defaults] removeObjectForKey:@"outputDevice"];
-			});
+			DLog(@"AirPlay renderer failed: %@", [audioRenderer error]);
+
+			// If an explicit AirPlay device was selected, fall back to the
+			// system default. This retriggers device observers everywhere,
+			// including the backend re-selection in AudioPlayer if the resolved
+			// default route is not AirPlay (that path rebuilds the whole output
+			// via KVO/restart).
+			NSDictionary *device = [[[NSUserDefaultsController sharedUserDefaultsController] defaults] objectForKey:@"outputDevice"];
+			if(device) {
+				DLog(@"AirPlay renderer recovery: clearing explicit device, falling back to system default");
+				dispatch_async(dispatch_get_main_queue(), ^{
+					[[[NSUserDefaultsController sharedUserDefaultsController] defaults] removeObjectForKey:@"outputDevice"];
+				});
+			}
+
+			// Always flag the renderer dead so the feeder thread recreates it in
+			// place. This covers the quadrants where the fallback yields no
+			// backend-class change (default absent, or default still AirPlay),
+			// where the KVO/restart flow above would otherwise never fire.
+			DLog(@"AirPlay renderer recovery: flagging renderer for in-place rebuild");
+			[currentPtsLock lock];
+			rendererFailed = YES;
+			[currentPtsLock unlock];
 		}
 	}
+}
+
+- (void)rendererWasFlushedAutomatically:(NSNotification *)notification {
+	// The system flushed the renderer out from under us (route hiccup); our
+	// outputPts bookkeeping still believes ~2 s is enqueued, which would stall
+	// enqueue gating until currentPts catches up. Flag the feeder thread to
+	// reset PTS/prebuffer bookkeeping instead of doing heavy work here on the
+	// notification queue.
+	DLog(@"AirPlay renderer was flushed automatically; resetting enqueue bookkeeping");
+	[currentPtsLock lock];
+	rendererFlushedAutomatically = YES;
+	[currentPtsLock unlock];
 }
 
 - (AudioChunk *)renderInput:(int)amountToRead {
@@ -539,6 +567,23 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 				[self flushRenderer];
 			}
 
+			// Renderer self-heal, driven off flags the KVO status observer and
+			// the automatic-flush notification set. A dead renderer wins over an
+			// automatic flush (the rebuild resets the same bookkeeping).
+			BOOL doRebuild;
+			BOOL doAutoFlush;
+			[currentPtsLock lock];
+			doRebuild = rendererFailed;
+			doAutoFlush = rendererFlushedAutomatically;
+			rendererFailed = NO;
+			rendererFlushedAutomatically = NO;
+			[currentPtsLock unlock];
+			if(doRebuild) {
+				[self rebuildRenderer];
+			} else if(doAutoFlush) {
+				[self flushRenderer];
+			}
+
 			if(stopping)
 				break;
 
@@ -621,6 +666,122 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	}
 }
 
+// Construct the AVSampleBufferAudioRenderer + AVSampleBufferRenderSynchronizer
+// pair and wire every observer the running backend depends on. Shared by the
+// setup path and the in-place failure rebuild so both produce identically wired
+// renderers. Callers hold @synchronized(self).
+- (BOOL)buildRenderer {
+	audioRenderer = [AVSampleBufferAudioRenderer new];
+	renderSynchronizer = [AVSampleBufferRenderSynchronizer new];
+
+	if(audioRenderer == nil || renderSynchronizer == nil)
+		return NO;
+
+	// Re-resolve the output device from current defaults and bind it to the
+	// freshly created renderer.
+	NSDictionary *device = [[[NSUserDefaultsController sharedUserDefaultsController] defaults] objectForKey:@"outputDevice"];
+	if(device) {
+		BOOL ok = [self setOutputDeviceWithDeviceDict:device];
+		if(!ok) {
+			// Ruh roh.
+			[self setOutputDeviceWithDeviceDict:nil];
+
+			[[[NSUserDefaultsController sharedUserDefaultsController] defaults] removeObjectForKey:@"outputDevice"];
+		}
+	} else {
+		[self setOutputDeviceWithDeviceDict:nil];
+	}
+
+	// setOutputDeviceByID short-circuits when the resolved device ID is
+	// unchanged, so force the UID onto this brand-new renderer.
+	NSString *deviceUID = CogDeviceUID(outputDeviceID);
+	if(deviceUID) {
+		[audioRenderer setAudioOutputDeviceUniqueID:deviceUID];
+	}
+
+	[audioRenderer addObserver:self forKeyPath:@"status" options:0 context:kOutputAirPlayContext];
+	rendererStatusObserverApplied = YES;
+
+	[[NSNotificationCenter defaultCenter] addObserver:self
+	                                         selector:@selector(rendererWasFlushedAutomatically:)
+	                                             name:AVSampleBufferAudioRendererWasFlushedAutomaticallyNotification
+	                                           object:audioRenderer];
+	flushNotificationObserverApplied = YES;
+
+	[renderSynchronizer addRenderer:audioRenderer];
+
+	[currentPtsLock lock];
+	currentPts = kCMTimeZero;
+	lastPts = kCMTimeZero;
+	outputPts = kCMTimeZero;
+	[currentPtsLock unlock];
+
+	[self synchronizerBlock];
+
+	[audioRenderer setVolume:volume];
+
+	return YES;
+}
+
+// Tear down a failed renderer/synchronizer pair and recreate it in place on the
+// feeder thread, so a route-death that does not cross a backend-class boundary
+// still recovers to a working renderer. Runs under @synchronized(self) to
+// serialize with doStop's teardown.
+- (void)rebuildRenderer {
+	@synchronized(self) {
+		if(stopping || stopInvoked)
+			return;
+
+		DLog(@"AirPlay renderer rebuild: recreating failed renderer in place");
+
+		// Detach the periodic block and observers from the dead objects.
+		[self removeSynchronizerBlock];
+		if(rendererStatusObserverApplied) {
+			[audioRenderer removeObserver:self forKeyPath:@"status" context:kOutputAirPlayContext];
+			rendererStatusObserverApplied = NO;
+		}
+		if(flushNotificationObserverApplied) {
+			[[NSNotificationCenter defaultCenter] removeObserver:self name:AVSampleBufferAudioRendererWasFlushedAutomaticallyNotification object:audioRenderer];
+			flushNotificationObserverApplied = NO;
+		}
+
+		// Halt and release the dead pair.
+		[renderSynchronizer setRate:0];
+		if(renderSynchronizer && audioRenderer) {
+			[renderSynchronizer removeRenderer:audioRenderer atTime:kCMTimeZero completionHandler:nil];
+		}
+		if(audioRenderer) {
+			[audioRenderer stopRequestingMediaData];
+			[audioRenderer flush];
+		}
+		audioRenderer = nil;
+		renderSynchronizer = nil;
+
+		// Reset PTS/prebuffer bookkeeping so re-enqueue starts from zero and the
+		// prebuffer-gated auto-start restarts the synchronizer once the fresh
+		// renderer fills.
+		[currentPtsLock lock];
+		currentPts = kCMTimeZero;
+		lastPts = kCMTimeZero;
+		outputPts = kCMTimeZero;
+		lastEnqueuedStreamTimestamp = 0.0;
+		secondsLatency = 0.0;
+		[currentPtsLock unlock];
+
+		started = NO;
+		restarted = NO;
+		prebufferReached = NO;
+		prebufferSignaled = NO;
+
+		if(![self buildRenderer]) {
+			DLog(@"AirPlay renderer rebuild: replacement renderer creation failed");
+			return;
+		}
+
+		DLog(@"AirPlay renderer rebuild: replacement renderer live, awaiting prebuffer to resume");
+	}
+}
+
 - (BOOL)setup {
 	if(audioRenderer || renderSynchronizer)
 		[self stop];
@@ -657,25 +818,12 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 		prebufferReached = NO;
 		prebufferSignaled = NO;
 
-		audioRenderer = [AVSampleBufferAudioRenderer new];
-		renderSynchronizer = [AVSampleBufferRenderSynchronizer new];
+		visController = [VisualizationController sharedController];
 
-		if(audioRenderer == nil || renderSynchronizer == nil)
+		// Create and wire the renderer/synchronizer pair (also resolves the
+		// output device against current defaults).
+		if(![self buildRenderer])
 			return NO;
-
-		// Setup the output device before mucking with settings
-		NSDictionary *device = [[[NSUserDefaultsController sharedUserDefaultsController] defaults] objectForKey:@"outputDevice"];
-		if(device) {
-			BOOL ok = [self setOutputDeviceWithDeviceDict:device];
-			if(!ok) {
-				// Ruh roh.
-				[self setOutputDeviceWithDeviceDict:nil];
-
-				[[[NSUserDefaultsController sharedUserDefaultsController] defaults] removeObjectForKey:@"outputDevice"];
-			}
-		} else {
-			[self setOutputDeviceWithDeviceDict:nil];
-		}
 
 		// Default advertised format until the first track prepares a real one
 		bzero(&deviceFormat, sizeof(deviceFormat));
@@ -690,8 +838,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 		deviceChannelConfig = AudioConfigStereo;
 
 		[outputController setFormat:&deviceFormat channelConfig:deviceChannelConfig];
-
-		visController = [VisualizationController sharedController];
 
 		downmixNode = [[DSPDownmixNode alloc] initWithController:self previous:self latency:0.03];
 		faderNode = [[DSPFaderNode alloc] initWithController:self previous:downmixNode latency:0.03];
@@ -710,21 +856,6 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 
 		[[NSUserDefaultsController sharedUserDefaultsController] addObserver:self forKeyPath:@"values.outputDevice" options:0 context:kOutputAirPlayContext];
 		observersapplied = YES;
-
-		[audioRenderer addObserver:self forKeyPath:@"status" options:0 context:kOutputAirPlayContext];
-		rendererStatusObserverApplied = YES;
-
-		[renderSynchronizer addRenderer:audioRenderer];
-
-		[currentPtsLock lock];
-		currentPts = kCMTimeZero;
-		lastPts = kCMTimeZero;
-		outputPts = kCMTimeZero;
-		[currentPtsLock unlock];
-
-		[self synchronizerBlock];
-
-		[audioRenderer setVolume:volume];
 
 		return YES;
 	}
@@ -797,6 +928,10 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 		if(rendererStatusObserverApplied) {
 			[audioRenderer removeObserver:self forKeyPath:@"status" context:kOutputAirPlayContext];
 			rendererStatusObserverApplied = NO;
+		}
+		if(flushNotificationObserverApplied) {
+			[[NSNotificationCenter defaultCenter] removeObserver:self name:AVSampleBufferAudioRendererWasFlushedAutomaticallyNotification object:audioRenderer];
+			flushNotificationObserverApplied = NO;
 		}
 		stopping = YES;
 		paused = NO;
@@ -901,6 +1036,16 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 }
 
 - (void)resume {
+	// Never advance the timeline before the prebuffer has filled, or the first
+	// chunks play out against an empty renderer and get dropped. If we are still
+	// inside the prebuffer window (user unpaused early, playback started paused,
+	// or a renderer rebuild is refilling), just clear paused and let the feeder
+	// thread's auto-start (!started && !paused && prebufferReached) start the
+	// synchronizer once the prebuffer is reached.
+	if(!prebufferReached) {
+		paused = NO;
+		return;
+	}
 	CMTime resumePts;
 	[currentPtsLock lock];
 	resumePts = currentPts;

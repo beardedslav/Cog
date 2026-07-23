@@ -58,7 +58,11 @@
 	BOOL devicealivelistenerapplied;
 	BOOL observersapplied;
 	BOOL rendererStatusObserverApplied;
+	BOOL flushNotificationObserverApplied;
 	BOOL outputdevicechanged;
+
+	BOOL rendererFailed;
+	BOOL rendererFlushedAutomatically;
 
 	BOOL DSPsLaunched;
 
