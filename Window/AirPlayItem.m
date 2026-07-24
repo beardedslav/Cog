@@ -83,7 +83,7 @@ static NSUInteger routeDetectionGeneration = 0;
 	}
 }
 
-+ (void)enumerateOutputDevices:(void (NS_NOESCAPE ^)(NSString *name, AudioDeviceID deviceID, BOOL isAirPlay))block {
++ (void)enumerateOutputDevices:(void (NS_NOESCAPE ^)(NSString *name, AudioDeviceID deviceID, UInt32 transportType))block {
 	AudioObjectPropertyAddress theAddress = {
 		.mSelector = kAudioHardwarePropertyDevices,
 		.mScope = kAudioObjectPropertyScopeGlobal,
@@ -127,8 +127,7 @@ static NSUInteger routeDetectionGeneration = 0;
 		devAddress.mSelector = kAudioDevicePropertyDeviceNameCFString;
 		if(AudioObjectGetPropertyData(devids[i], &devAddress, 0, NULL, &size, &name) != noErr || !name) continue;
 
-		BOOL isAirPlay = CogDeviceTransportType(devids[i]) == kAudioDeviceTransportTypeAirPlay;
-		block((__bridge NSString *)name, devids[i], isAirPlay);
+		block((__bridge NSString *)name, devids[i], CogDeviceTransportType(devids[i]));
 		CFRelease(name);
 	}
 
@@ -163,7 +162,13 @@ static NSUInteger routeDetectionGeneration = 0;
 	NSMutableArray<NSMenuItem *> *airPlayItems = [NSMutableArray array];
 	__block BOOL matchedByID = NO;
 	__block NSMenuItem *nameFallbackItem = nil;
-	[AirPlayItem enumerateOutputDevices:^(NSString *name, AudioDeviceID deviceID, BOOL isAirPlay) {
+	[AirPlayItem enumerateOutputDevices:^(NSString *name, AudioDeviceID deviceID, UInt32 transportType) {
+		BOOL isAirPlay = transportType == kAudioDeviceTransportTypeAirPlay;
+		// Conference apps publish virtual loopback devices (Microsoft Teams
+		// Audio, ZoomAudioDevice) that nobody plays music to. Keep virtual
+		// transports out of the quick picker unless one is the current
+		// selection; the Output pane in Preferences still lists every device.
+		if(transportType == kAudioDeviceTransportTypeVirtual && currentID != (int)deviceID) return;
 		NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:name action:@selector(selectDevice:) keyEquivalent:@""];
 		item.target = self;
 		item.representedObject = @{ @"name": name, @"deviceID": @((int)deviceID) };
