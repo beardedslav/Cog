@@ -13,6 +13,12 @@ final class AudioDeviceModel: ObservableObject {
     private var isActive = true
     private var observers: [NSObjectProtocol] = []
     private var windowObservers: [NSObjectProtocol] = []
+    // Tracks whether the Output pane is the one currently on screen. The model
+    // itself is built eagerly at Preferences-window init and lives for the
+    // app's lifetime (StateObjectCompat evaluates its autoclosure immediately),
+    // so this flag — not the model's existence — is what scopes the window
+    // key-change handler below to "Output pane visible".
+    var paneIsVisible = false
     // Set around programmatic refreshes (loadSelection); a programmatic
     // assignment must never persist or arm — only a user pick may.
     private var isProgrammaticUpdate = false
@@ -36,6 +42,9 @@ final class AudioDeviceModel: ObservableObject {
 
     deinit {
         isActive = false
+        // Unreachable today (the model is app-lifetime), but guards against a
+        // silent AirPlayServiceBrowser hold leak if ownership ever changes.
+        stopObserving()
         for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
     }
 
@@ -48,9 +57,11 @@ final class AudioDeviceModel: ObservableObject {
     // = false), so closing and reopening it does not fire this pane's onDisappear/
     // onAppear. Bridge the window's own lifecycle to the picker so the Bonjour
     // browser cannot run past window close. Scoped to PreferencesWindow so the main
-    // window's key changes never start or stop browsing. This model exists only
-    // while the Output pane is the current pane, so these observers are implicitly
-    // gated to "Output pane current"; a close on a different pane finds no model.
+    // window's key changes never start or stop browsing. The model is built eagerly
+    // at Preferences-window init and retained for the app's lifetime, so it exists
+    // regardless of which pane is current; paneIsVisible (set by OutputPaneView's
+    // onAppear/onDisappear) is what gates the didBecomeKey restart to "Output pane
+    // is the one on screen".
     private func observePreferencesWindowLifecycle() {
         windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -62,11 +73,12 @@ final class AudioDeviceModel: ObservableObject {
             forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main) { [weak self] note in
                 guard note.object is PreferencesWindow else { return }
+                guard let self, self.paneIsVisible else { return }
                 // onAppear does not re-fire on reopen; restart here. Both calls are
                 // idempotent (startObserving guards observers.isEmpty), so repeated
                 // key changes are no-ops while already browsing.
-                self?.startObserving()
-                self?.loadDevices()
+                self.startObserving()
+                self.loadDevices()
             })
     }
 
