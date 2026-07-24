@@ -93,7 +93,9 @@ static void *kOutputCoreAudioContext = &kOutputCoreAudioContext;
 static OSStatus
 default_device_changed(AudioObjectID inObjectID, UInt32 inNumberAddresses, const AudioObjectPropertyAddress *inAddresses, void *inUserData) {
 	OutputCoreAudio *_self = (__bridge OutputCoreAudio *)inUserData;
-	return [_self setOutputDeviceByID:-1];
+	OSStatus err = [_self setOutputDeviceByID:-1];
+	[_self checkBackendBoundaryAfterRetarget];
+	return err;
 }
 
 static OSStatus
@@ -101,8 +103,11 @@ current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddresses, cons
 	OutputCoreAudio *_self = (__bridge OutputCoreAudio *)inUserData;
 	for(UInt32 i = 0; i < inNumberAddresses; ++i) {
 		switch(inAddresses[i].mSelector) {
-			case kAudioDevicePropertyDeviceIsAlive:
-				return [_self setOutputDeviceByID:-1];
+			case kAudioDevicePropertyDeviceIsAlive: {
+				OSStatus err = [_self setOutputDeviceByID:-1];
+				[_self checkBackendBoundaryAfterRetarget];
+				return err;
+			}
 
 			case kAudioDevicePropertyNominalSampleRate:
 			case kAudioDevicePropertyStreamFormat:
@@ -111,6 +116,21 @@ current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddresses, cons
 		}
 	}
 	return noErr;
+}
+
+// A listener-driven retarget (device died, or the tracked system default
+// moved) can land on a device across the AirPlay transport boundary. The
+// stored selection did not change, so AudioPlayer's KVO never fires; re-run
+// the backend check ourselves so playback rebuilds onto the right backend.
+- (void)checkBackendBoundaryAfterRetarget {
+	OutputNode *controller = outputController;
+	if(!controller || stopping || stopInvoked) return;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if(![controller backendMatchesCurrentDevice]) {
+			DLog(@"Retargeted across a transport boundary; restarting playback to switch backend");
+			[controller restartPlaybackAtCurrentPosition];
+		}
+	});
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
