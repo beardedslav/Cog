@@ -12,6 +12,7 @@ final class AudioDeviceModel: ObservableObject {
 
     private var isActive = true
     private var observers: [NSObjectProtocol] = []
+    private var windowObservers: [NSObjectProtocol] = []
     // Set around programmatic refreshes (loadSelection); a programmatic
     // assignment must never persist or arm — only a user pick may.
     private var isProgrammaticUpdate = false
@@ -33,10 +34,40 @@ final class AudioDeviceModel: ObservableObject {
         }
     }
 
-    deinit { isActive = false }
+    deinit {
+        isActive = false
+        for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
+    }
 
     init() {
         loadDevices()
+        observePreferencesWindowLifecycle()
+    }
+
+    // The Preferences window keeps a permanent NSHostingView (isReleasedWhenClosed
+    // = false), so closing and reopening it does not fire this pane's onDisappear/
+    // onAppear. Bridge the window's own lifecycle to the picker so the Bonjour
+    // browser cannot run past window close. Scoped to PreferencesWindow so the main
+    // window's key changes never start or stop browsing. This model exists only
+    // while the Output pane is the current pane, so these observers are implicitly
+    // gated to "Output pane current"; a close on a different pane finds no model.
+    private func observePreferencesWindowLifecycle() {
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil, queue: .main) { [weak self] note in
+                guard note.object is PreferencesWindow else { return }
+                self?.stopObserving()
+            })
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil, queue: .main) { [weak self] note in
+                guard note.object is PreferencesWindow else { return }
+                // onAppear does not re-fire on reopen; restart here. Both calls are
+                // idempotent (startObserving guards observers.isEmpty), so repeated
+                // key changes are no-ops while already browsing.
+                self?.startObserving()
+                self?.loadDevices()
+            })
     }
 
     func startObserving() {
@@ -61,6 +92,10 @@ final class AudioDeviceModel: ObservableObject {
     }
 
     func stopObserving() {
+        // Idempotent: without this guard a second call (e.g. onDisappear firing
+        // after our willClose handler already stopped) schedules an unmatched
+        // endBrowsingSoon decrement that steals another picker's live hold.
+        guard !observers.isEmpty else { return }
         AirPlayServiceBrowser.shared().endBrowsingSoon()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
