@@ -63,7 +63,7 @@ the log around it, note the exact row, and hand it to the session — it should 
 | A15 | Stress: rapid switching | Click through several devices quickly in the toolbar menu | Serialized restarts, ends on last selection, no hang/crash |
 | A16 | **Route-detector fallback** (new, after B1) | With AirPlay routes on the network but none materialized as a CoreAudio device, open the toolbar menu; close it and reopen within ~5 s | "Open Sound Settings…" item appears, at least on the second open (detection now runs only while the menu is open plus a short grace window) |
 | A17 | **Bonjour pick: toolbar** (new) | With a sink on the network but not in Sound settings' active output, open the toolbar menu | Device listed by name; picking it opens Sound settings and shows a – marker on reopen; activating the device in Settings makes Cog switch to it automatically (log shows the device change) |
-| A18 | **Bonjour pick: Preferences** (new) | Same flow via Preferences → Output | Same, including snap-back of the picker until the device materializes |
+| A18 | **Bonjour pick: Preferences** (new) | Same flow via Preferences → Output; also repeat leaving Preferences → Output open while activating the sink in Sound settings | Same, including snap-back of the picker until the device materializes; with the pane open, the picker must land on the new device (not System Default) once it materializes |
 | A19 | **Local-network permission** (new) | First menu open on macOS 15+ | Permission prompt appears once; denying it leaves the menu working with the pre-Bonjour fallback behavior |
 
 Known v1 deferrals — expected behavior, do NOT report as bugs: route-loss
