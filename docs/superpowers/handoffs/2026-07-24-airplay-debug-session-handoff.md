@@ -1,5 +1,34 @@
 # AirPlay debug session handoff — 2026-07-24 evening
 
+> **RESOLVED — 2026-07-24 late evening session. Do not resume from "Next
+> steps"; everything below is kept for archaeology. Outcomes:**
+>
+> - **Finding 3 (discard wedge): FIXED at root cause** (795d8cd50). H1 was
+>   refuted — a fresh renderer wedged identically. Real cause: the AirPlay
+>   bridge reports 2.000 s stream latency (88200 frames @ 44.1k) and
+>   MediaToolbox anchors the synchronizer timebase that far behind the
+>   queue's playhead, so the 2.0 s feeder cap gated enqueue exactly at the
+>   discard threshold. Fix: query the bound device's HAL output latency and
+>   add it to the buffered-seconds cap. Verified: zero sbufIsOld discards,
+>   continuous playback, seek/pause clean.
+> - **Finding 1 (name-based pending switch): FIXED** (015a2397a) —
+>   transport-based fallback match + store the bridge's real device name.
+>   A17 auto-switch verified live; A18 Preferences flows still to re-run.
+> - **Finding 2 (restore-system-default mitigation): NOT VIABLE, closed.**
+>   Moving the system default away destroys the bridge device (verified by
+>   enumeration); the earlier "bridge stayed alive" observation was made
+>   while inaudibly wedged and was wrong. Research spike (SDK headers,
+>   Optimus Player AirPlay-Enabler, FB13521393): per-app AirPlay routing on
+>   macOS is entitlement-gated private API; AVRoutePickerView routes
+>   AVPlayer only on macOS. No public path; system-route hijack is accepted
+>   as a platform limitation (human signed off).
+> - **Finding 4 (silent cross-transport retarget): FIXED** (cdd35cfd4) —
+>   both backends re-run backendMatchesCurrentDevice after listener-driven
+>   retargets and restart playback across the boundary. Verified live both
+>   directions.
+> - Bonus: virtual transport devices (Teams/Zoom) hidden from the quick
+>   picker unless currently selected (9de0bb28c).
+
 **Read this first when resuming. This continues the full-matrix testing
 session (`2026-07-24-airplay-full-testing-handoff.md`) which was interrupted
 mid-debug on rows A17/A18. Use `superpowers:systematic-debugging`; Phase 1
