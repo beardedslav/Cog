@@ -198,15 +198,26 @@ static NSString *browseResultName(nw_browse_result_t result) {
 
 - (void)checkPendingSwitch {
 	if(!pendingName) return;
+	// macOS materializes a single generic bridge device (transport airp,
+	// literally named "AirPlay") that follows the system's AirPlay route; it
+	// never carries the sink's Bonjour name. Prefer an exact name match in
+	// case that ever changes, but fall back to any live AirPlay-transport
+	// device: while a switch is armed, whatever bridge appears is the route
+	// the user just activated.
 	AudioDeviceID matched = CogDeviceIDMatchingName(pendingName);
+	if(matched == kAudioObjectUnknown || CogDeviceTransportType(matched) != kAudioDeviceTransportTypeAirPlay) {
+		matched = CogFirstAirPlayDeviceID();
+	}
 	if(matched == kAudioObjectUnknown) return;
-	if(CogDeviceTransportType(matched) != kAudioDeviceTransportTypeAirPlay) return;
 
-	DLog(@"Pending AirPlay device \"%@\" materialized as %u; switching output", pendingName, matched);
-	NSString *name = pendingName;
+	DLog(@"Pending AirPlay sink \"%@\" reachable via device %u; switching output", pendingName, matched);
 	[self disarmPendingSwitch];
+	// Store the bridge's real device name, not the Bonjour name: bridge IDs
+	// churn across materializations, and the name fallback in the output
+	// backends only works if the stored name matches an actual device.
+	NSString *deviceName = CogDeviceName(matched) ?: @"AirPlay";
 	writingSelection = YES;
-	[[NSUserDefaults standardUserDefaults] setObject:@{ @"name": name, @"deviceID": @((int)matched) }
+	[[NSUserDefaults standardUserDefaults] setObject:@{ @"name": deviceName, @"deviceID": @((int)matched) }
 	                                          forKey:@"outputDevice"];
 	writingSelection = NO;
 }

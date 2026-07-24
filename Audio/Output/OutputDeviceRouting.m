@@ -61,6 +61,22 @@ static BOOL deviceIsAlive(AudioDeviceID deviceID) {
 	return err == noErr && isAlive;
 }
 
+NSString *CogDeviceName(AudioDeviceID deviceID) {
+	AudioObjectPropertyAddress theAddress = {
+		.mSelector = kAudioDevicePropertyDeviceNameCFString,
+		.mScope = kAudioDevicePropertyScopeOutput,
+		.mElement = kAudioObjectPropertyElementMaster
+	};
+
+	CFStringRef deviceName = NULL;
+	UInt32 size = sizeof(deviceName);
+	OSStatus err = AudioObjectGetPropertyData(deviceID, &theAddress, 0, NULL, &size, &deviceName);
+	if(err != noErr || !deviceName) {
+		return nil;
+	}
+	return (NSString *)CFBridgingRelease(deviceName);
+}
+
 AudioDeviceID CogDeviceIDMatchingName(NSString *name) {
 	if(![name length]) {
 		return kAudioObjectUnknown;
@@ -165,6 +181,44 @@ double CogDeviceOutputLatencySeconds(AudioDeviceID deviceID) {
 	}
 
 	return latencyFrames / sampleRate;
+}
+
+AudioDeviceID CogFirstAirPlayDeviceID(void) {
+	AudioObjectPropertyAddress theAddress = {
+		.mSelector = kAudioHardwarePropertyDevices,
+		.mScope = kAudioObjectPropertyScopeGlobal,
+		.mElement = kAudioObjectPropertyElementMaster
+	};
+
+	UInt32 propsize = 0;
+	if(AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &theAddress, 0, NULL, &propsize) != noErr) {
+		return kAudioObjectUnknown;
+	}
+
+	UInt32 nDevices = propsize / (UInt32)sizeof(AudioDeviceID);
+	AudioDeviceID *devids = (AudioDeviceID *)malloc(propsize);
+	if(!devids) {
+		return kAudioObjectUnknown;
+	}
+	if(AudioObjectGetPropertyData(kAudioObjectSystemObject, &theAddress, 0, NULL, &propsize, devids) != noErr) {
+		free(devids);
+		return kAudioObjectUnknown;
+	}
+
+	AudioDeviceID found = kAudioObjectUnknown;
+	for(UInt32 i = 0; i < nDevices; ++i) {
+		if(CogDeviceTransportType(devids[i]) != kAudioDeviceTransportTypeAirPlay) {
+			continue;
+		}
+		if(!deviceIsAlive(devids[i])) {
+			continue;
+		}
+		found = devids[i];
+		break;
+	}
+
+	free(devids);
+	return found;
 }
 
 BOOL CogOutputDeviceDictIsAirPlay(NSDictionary *deviceDict) {
