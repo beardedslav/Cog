@@ -6,8 +6,8 @@
 //  chunks through downmix -> fader -> buffer tail nodes and enqueues
 //  CMSampleBuffers into an AVSampleBufferAudioRenderer targeting the
 //  selected AirPlay device by CoreAudio UID. Roughly 2 seconds of audio
-//  stay in flight; only AirPlay routes ever use this backend, so wired
-//  playback never pays that latency.
+//  beyond the device's reported latency stay in flight; only AirPlay
+//  routes ever use this backend, so wired playback never pays that cost.
 //
 
 #import <AVFoundation/AVFoundation.h>
@@ -66,6 +66,7 @@
 	BOOL DSPsLaunched;
 
 	double lastEnqueuedStreamTimestamp;
+	double deviceLatencySeconds;
 	double secondsLatency;
 	double secondsHdcdSustained;
 

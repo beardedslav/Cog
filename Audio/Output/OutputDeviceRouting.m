@@ -108,6 +108,65 @@ AudioDeviceID CogDeviceIDMatchingName(NSString *name) {
 	return found;
 }
 
+double CogDeviceOutputLatencySeconds(AudioDeviceID deviceID) {
+	AudioObjectPropertyAddress theAddress = {
+		.mSelector = kAudioDevicePropertyLatency,
+		.mScope = kAudioDevicePropertyScopeOutput,
+		.mElement = kAudioObjectPropertyElementMaster
+	};
+
+	UInt32 latencyFrames = 0;
+	UInt32 value = 0;
+	UInt32 size = sizeof(value);
+	if(AudioObjectGetPropertyData(deviceID, &theAddress, 0, NULL, &size, &value) == noErr) {
+		latencyFrames += value;
+	}
+
+	theAddress.mSelector = kAudioDevicePropertySafetyOffset;
+	value = 0;
+	size = sizeof(value);
+	if(AudioObjectGetPropertyData(deviceID, &theAddress, 0, NULL, &size, &value) == noErr) {
+		latencyFrames += value;
+	}
+
+	// AirPlay bridge devices report their whole network buffer (~2 s) as
+	// stream latency on the first output stream, not on the device itself.
+	theAddress.mSelector = kAudioDevicePropertyStreams;
+	UInt32 propsize = 0;
+	if(AudioObjectGetPropertyDataSize(deviceID, &theAddress, 0, NULL, &propsize) == noErr && propsize >= sizeof(AudioStreamID)) {
+		AudioStreamID *streams = (AudioStreamID *)malloc(propsize);
+		if(streams) {
+			if(AudioObjectGetPropertyData(deviceID, &theAddress, 0, NULL, &propsize, streams) == noErr) {
+				AudioObjectPropertyAddress streamAddress = {
+					.mSelector = kAudioStreamPropertyLatency,
+					.mScope = kAudioObjectPropertyScopeGlobal,
+					.mElement = kAudioObjectPropertyElementMaster
+				};
+				value = 0;
+				size = sizeof(value);
+				if(AudioObjectGetPropertyData(streams[0], &streamAddress, 0, NULL, &size, &value) == noErr) {
+					latencyFrames += value;
+				}
+			}
+			free(streams);
+		}
+	}
+
+	if(!latencyFrames) {
+		return 0.0;
+	}
+
+	theAddress.mSelector = kAudioDevicePropertyNominalSampleRate;
+	theAddress.mScope = kAudioObjectPropertyScopeGlobal;
+	Float64 sampleRate = 0;
+	size = sizeof(sampleRate);
+	if(AudioObjectGetPropertyData(deviceID, &theAddress, 0, NULL, &size, &sampleRate) != noErr || sampleRate <= 0) {
+		return 0.0;
+	}
+
+	return latencyFrames / sampleRate;
+}
+
 BOOL CogOutputDeviceDictIsAirPlay(NSDictionary *deviceDict) {
 	AudioDeviceID deviceID = kAudioObjectUnknown;
 

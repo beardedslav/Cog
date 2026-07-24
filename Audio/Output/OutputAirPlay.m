@@ -265,6 +265,16 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 
 			[audioRenderer setAudioOutputDeviceUniqueID:deviceUID];
 
+			// The synchronizer timebase runs behind the sink's queue clock by
+			// the device latency (~2 s on AirPlay bridges). Enqueue gating must
+			// budget on top of that skew, or once the queue starts every buffer
+			// past the pre-roll arrives behind the playhead and MediaToolbox
+			// silently discards it.
+			double latencySeconds = CogDeviceOutputLatencySeconds(outputDeviceID);
+			[currentPtsLock lock];
+			deviceLatencySeconds = latencySeconds;
+			[currentPtsLock unlock];
+
 			outputdevicechanged = YES;
 		}
 
@@ -453,11 +463,12 @@ airplay_current_device_listener(AudioObjectID inObjectID, UInt32 inNumberAddress
 	if(!audioRenderer) return;
 
 	while(!stopping && [audioRenderer isReadyForMoreMediaData]) {
-		double buffered;
+		double buffered, headroom;
 		[currentPtsLock lock];
 		buffered = CMTimeGetSeconds(CMTimeSubtract(outputPts, currentPts));
+		headroom = kAirPlayMaxBufferedSeconds + deviceLatencySeconds;
 		[currentPtsLock unlock];
-		if(buffered >= kAirPlayMaxBufferedSeconds) break;
+		if(buffered >= headroom) break;
 
 		AudioChunk *chunk = nil;
 		[outputLock lock];

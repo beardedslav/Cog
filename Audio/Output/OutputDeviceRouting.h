@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 UInt32 CogDeviceTransportType(AudioDeviceID deviceID);
 OSStatus CogResolveDefaultOutputDevice(AudioDeviceID *outDeviceID);
 NSString *_Nullable CogDeviceUID(AudioDeviceID deviceID);
+double CogDeviceOutputLatencySeconds(AudioDeviceID deviceID);
 AudioDeviceID CogDeviceIDMatchingName(NSString *_Nullable name);
 BOOL CogOutputDeviceDictIsAirPlay(NSDictionary *_Nullable deviceDict);
 
